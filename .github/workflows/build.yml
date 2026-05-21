@@ -1,0 +1,66 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            binary: diffhance
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            binary: diffhance
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            binary: diffhance.exe
+          - target: windows-arm64
+            goos: windows
+            goarch: arm64
+            binary: diffhance.exe
+          - target: macos-arm64
+            goos: darwin
+            goarch: arm64
+            binary: diffhance
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p "dist/${{ matrix.target }}"
+          go build -trimpath -ldflags="-s -w" -o "dist/${{ matrix.target }}/${{ matrix.binary }}" .
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: diffhance-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/${{ matrix.binary }}
+          if-no-files-found: error
