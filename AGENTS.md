@@ -21,6 +21,8 @@
 - `--config PATH` reads rules as one `GLOB:CMD` per line, ignoring blank lines and lines starting with `#`; config rules are inserted where the flag appears.
 - Existing default rules configs are auto-loaded from platform config locations as `diffhance/rules` and appended after explicit `--rule` / `--config` rules, so explicit rules keep first-match priority; missing default config files are ignored.
 - `--print` keeps temp files and prints their paths separated by a tab; normal diff mode deletes temp files on exit.
+- `--print-rules` prints the resolved rules to stdout, one per line, after explicit and default configs are loaded; it exits without requiring positional file args or running preprocess/diff.
+- `--print-config-dirs` prints the default config file paths checked, one per line, without reading them; it exits without requiring positional file args or running preprocess/diff.
 - Default diff backend is `diff -u`; color injection only appends `--color=always` for bare `diff` when stdout is a terminal and `NO_COLOR` is unset.
 
 ## CI

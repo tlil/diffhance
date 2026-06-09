@@ -44,8 +44,8 @@ func TestParseArgsValidForms(t *testing.T) {
 		},
 		{
 			name: "boolean flags",
-			argv: []string{"--git", "--print", "--no-color", "path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"},
-			want: options{diff: "diff -u", git: true, printPaths: true, noColor: true, args: []string{"path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"}},
+			argv: []string{"--git", "--print", "--print-rules", "--print-config-dirs", "--no-color", "path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"},
+			want: options{diff: "diff -u", git: true, printPaths: true, printRules: true, printConfigDirs: true, noColor: true, args: []string{"path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"}},
 		},
 		{
 			name: "double dash stops flag parsing",
@@ -202,6 +202,85 @@ func TestStringSlice(t *testing.T) {
 	if got := s.String(); got != "one,two" {
 		t.Fatalf("String() = %q, want one,two", got)
 	}
+}
+
+func TestRunPrintRules(t *testing.T) {
+	tmp := t.TempDir()
+	config := filepath.Join(tmp, "rules.conf")
+	defaultConfig := filepath.Join(tmp, "default", "diffhance", "rules")
+	if err := os.WriteFile(config, []byte("*.json:jq -S .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(defaultConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(defaultConfig, []byte("*.xml:xmllint --format -\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withDefaultRulesConfigPaths(t, []string{defaultConfig})
+
+	o, err := parseArgs([]string{"--print-rules", "--rule", "*.txt:fmt-txt", "--config", config})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	got := captureStdout(t, func() {
+		code, err := run(o)
+		if err != nil || code != 0 {
+			t.Fatalf("run() code = %d, err = %v, want 0, nil", code, err)
+		}
+	})
+	if want := "*.txt:fmt-txt\n*.json:jq -S .\n*.xml:xmllint --format -\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunPrintConfigDirs(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{
+		filepath.Join(dir, "user", "diffhance", "rules"),
+		filepath.Join(dir, "system", "diffhance", "rules"),
+	}
+	withDefaultRulesConfigPaths(t, paths)
+
+	o, err := parseArgs([]string{"--print-config-dirs"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	got := captureStdout(t, func() {
+		code, err := run(o)
+		if err != nil || code != 0 {
+			t.Fatalf("run() code = %d, err = %v, want 0, nil", code, err)
+		}
+	})
+	if want := strings.Join(paths, "\n") + "\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestParseArgsPrintConfigDirsDoesNotReadDefaultConfigs(t *testing.T) {
+	dir := t.TempDir()
+	withDefaultRulesConfigPaths(t, []string{dir})
+
+	if _, err := parseArgs([]string{"--print-config-dirs"}); err != nil {
+		t.Fatalf("parseArgs() error = %v, want nil", err)
+	}
+}
+
+func TestPlatformRulesConfigPathsDarwinIncludesDotConfig(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-specific config paths")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := platformRulesConfigPaths()
+	want := filepath.Join(home, ".config", "diffhance", "rules")
+	for _, path := range got {
+		if path == want {
+			return
+		}
+	}
+	t.Fatalf("platformRulesConfigPaths() = %#v, want path %q", got, want)
 }
 
 func TestResolveInputs(t *testing.T) {

@@ -35,6 +35,12 @@ diffhance -r '*.json:jq -S .' -r '*.xml:xmllint --format -' a b
 # Load preprocessing rules from a config file
 diffhance --config ~/.config/diffhance/rules a.json b.json
 
+# Inspect the resolved rule set in application order
+diffhance --print-rules
+
+# Inspect default config file locations
+diffhance --print-config-dirs
+
 # Just emit the preprocessed file paths and pipe them yourself
 read L R < <(diffhance --print --pre 'jq -S .' a.json b.json)
 diff -u "$L" "$R"
@@ -69,6 +75,8 @@ because git treats any non-zero exit from an external diff as fatal.
 | `-d, --diff CMD`                    | Diff backend (default `diff -u`). The two preprocessed paths are appended as the last two positional args.               |
 | `--git`                             | Treat positional args as git's external-diff invocation                                                                  |
 | `--print`                           | Skip diffing; print `LEFT-PATH\tRIGHT-PATH` of the preprocessed files                                                    |
+| `--print-rules`                     | Print resolved rules to stdout, one per line, then exit                                                                  |
+| `--print-config-dirs`               | Print default config file locations checked, one per line, then exit                                                     |
 | `--no-color`                        | Don't auto-inject `--color=always` into the default `diff` backend                                                       |
 | `-h, --help`                        | Show help                                                                                                                |
 
@@ -83,7 +91,7 @@ Default locations:
 
 | Platform | Locations |
 | -------- | --------- |
-| macOS | `~/Library/Application Support/diffhance/rules`, `/Library/Application Support/diffhance/rules` |
+| macOS | `~/Library/Application Support/diffhance/rules`, `~/.config/diffhance/rules`, `/Library/Application Support/diffhance/rules` |
 | Linux/Unix | `$XDG_CONFIG_HOME/diffhance/rules` or `~/.config/diffhance/rules`, plus each `$XDG_CONFIG_DIRS/diffhance/rules` or `/etc/xdg/diffhance/rules` |
 | Windows | `%AppData%\diffhance\rules`, `%ProgramData%\diffhance\rules` |
 

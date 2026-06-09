@@ -4,6 +4,8 @@
 //	diffhance --pre 'jq .' a.json b.json
 //	diffhance --rule '*.json:jq .' --rule '*.xml:xmllint --format -' a b
 //	diffhance --config .diffhance-rules a b
+//	diffhance --print-rules
+//	diffhance --print-config-dirs
 //	GIT_EXTERNAL_DIFF='diffhance --git --rule "*.json:jq ."' git diff HEAD~1
 package main
 
@@ -40,6 +42,8 @@ FLAGS
                            PATH OLD-FILE OLD-HEX OLD-MODE NEW-FILE NEW-HEX NEW-MODE ...
       --print              Skip diffing. Print "LEFT-PATH\tRIGHT-PATH" of the
                            preprocessed files (kept on disk) for downstream tools.
+      --print-rules        Print resolved rules, one per line, then exit.
+      --print-config-dirs  Print default config file locations checked, one per line, then exit.
       --no-color           Do not auto-add color flags to the default diff backend.
   -h, --help               Show this help and exit.
 
@@ -55,6 +59,12 @@ EXAMPLES
 
   # Rules from a config file
   diffhance --config .diffhance-rules a.json b.json
+
+  # Inspect resolved rules in application order
+  diffhance --print-rules
+
+  # Inspect default config file locations
+  diffhance --print-config-dirs
 
   # Pipe two preprocessed files into your own pipeline
   read L R < <(diffhance --print --pre 'jq .' a.json b.json); diff -u "$L" "$R"
@@ -78,6 +88,8 @@ type options struct {
 	rules                  []string
 	git                    bool
 	printPaths             bool
+	printRules             bool
+	printConfigDirs        bool
 	noColor                bool
 	args                   []string
 }
@@ -130,6 +142,10 @@ func parseArgs(argv []string) (*options, error) {
 			o.git = true
 		case a == "--print":
 			o.printPaths = true
+		case a == "--print-rules":
+			o.printRules = true
+		case a == "--print-config-dirs":
+			o.printConfigDirs = true
 		case a == "--no-color":
 			o.noColor = true
 		case a == "-p", a == "--pre":
@@ -210,6 +226,9 @@ func parseArgs(argv []string) (*options, error) {
 	if o.diff == "" {
 		o.diff = "diff -u"
 	}
+	if o.printConfigDirs {
+		return o, nil
+	}
 	rules, err := readExistingRulesFiles(defaultRulesConfigPaths())
 	if err != nil {
 		return nil, err
@@ -232,6 +251,9 @@ func platformRulesConfigPaths() []string {
 			paths = append(paths, filepath.Join(dir, "diffhance", "rules"))
 		}
 	case "darwin":
+		if dir, err := os.UserHomeDir(); err == nil && dir != "" {
+			paths = append(paths, filepath.Join(dir, ".config", "diffhance", "rules"))
+		}
 		paths = append(paths, filepath.Join(string(filepath.Separator), "Library", "Application Support", "diffhance", "rules"))
 	default:
 		dirs := os.Getenv("XDG_CONFIG_DIRS")
@@ -280,6 +302,16 @@ func readRulesFile(path string) ([]string, error) {
 }
 
 func run(o *options) (int, error) {
+	if o.printConfigDirs {
+		printConfigDirs(defaultRulesConfigPaths())
+		return 0, nil
+	}
+
+	if o.printRules {
+		printRules(o.rules)
+		return 0, nil
+	}
+
 	leftPath, rightPath, displayPath, err := resolveInputs(o)
 	if err != nil {
 		return 2, err
@@ -318,6 +350,18 @@ func run(o *options) (int, error) {
 		code = 0
 	}
 	return code, err
+}
+
+func printRules(rules []string) {
+	for _, r := range rules {
+		fmt.Println(r)
+	}
+}
+
+func printConfigDirs(paths []string) {
+	for _, path := range paths {
+		fmt.Println(path)
+	}
 }
 
 type side string
