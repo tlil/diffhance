@@ -427,19 +427,19 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, "left", "nested/display.txt", src, "")
+	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, "")
 	if err != nil {
 		t.Fatalf("stage(copy) error = %v", err)
 	}
 	assertFileContent(t, out, "hello\n")
-	if want := filepath.Join(tmp, "left", "nested", "display.txt"); out != want {
+	if want := filepath.Join(tmp, leftPrefix, "nested", "display.txt"); out != want {
 		t.Fatalf("stage output = %q, want %q", out, want)
 	}
 
 	if runtime.GOOS == "windows" {
 		t.Skip("shell preprocessing command is POSIX-specific")
 	}
-	out, err = stage(tmp, "right", "display.txt", src, "tr a-z A-Z")
+	out, err = stage(tmp, rightPrefix, "display.txt", src, "tr a-z A-Z")
 	if err != nil {
 		t.Fatalf("stage(preprocess) error = %v", err)
 	}
@@ -453,12 +453,12 @@ func TestStageUsesSideNameForEmptyDisplayBasename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, "left", string(filepath.Separator), src, "")
+	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, "")
 	if err != nil {
 		t.Fatalf("stage() error = %v", err)
 	}
-	if filepath.Base(out) != "left" {
-		t.Fatalf("stage output basename = %q, want left", filepath.Base(out))
+	if filepath.Base(out) != leftPrefix {
+		t.Fatalf("stage output basename = %q, want %s", filepath.Base(out), leftPrefix)
 	}
 }
 
@@ -477,12 +477,12 @@ func TestStageDisplayPath(t *testing.T) {
 		{name: "absolute path under cwd", displayPath: filepath.Join(wd, "Objects", "config.json"), want: filepath.Join("Objects", "config.json")},
 		{name: "absolute path outside cwd", displayPath: filepath.Join(os.TempDir(), "config.json"), want: "config.json"},
 		{name: "parent traversal falls back to basename", displayPath: filepath.Join("..", "Objects", "config.json"), want: "config.json"},
-		{name: "empty path uses fallback", displayPath: "", want: "left"},
+		{name: "empty path uses fallback", displayPath: "", want: leftPrefix},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := stageDisplayPath(tt.displayPath, "left"); got != tt.want {
+			if got := stageDisplayPath(tt.displayPath, leftPrefix); got != tt.want {
 				t.Fatalf("stageDisplayPath(%q) = %q, want %q", tt.displayPath, got, tt.want)
 			}
 		})
@@ -491,7 +491,7 @@ func TestStageDisplayPath(t *testing.T) {
 
 func TestStageErrors(t *testing.T) {
 	tmp := t.TempDir()
-	_, err := stage(tmp, "left", "display.txt", filepath.Join(tmp, "missing.txt"), "")
+	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), "")
 	if err == nil {
 		t.Fatal("stage() error = nil, want missing input error")
 	}
@@ -503,7 +503,7 @@ func TestStageErrors(t *testing.T) {
 	if err := os.WriteFile(src, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = stage(tmp, "right", "display.txt", src, "exit 7")
+	_, err = stage(tmp, rightPrefix, "display.txt", src, "exit 7")
 	if err == nil || !strings.Contains(err.Error(), `running "exit 7"`) {
 		t.Fatalf("stage() error = %v, want command failure", err)
 	}
@@ -553,18 +553,18 @@ func TestShellQuote(t *testing.T) {
 }
 
 func TestDiffCommandLabelsBareDiff(t *testing.T) {
-	got := diffCommand("diff -u", "/tmp/diffhance/left/file.json", "/tmp/diffhance/right/file.json", "left/file.json", "right/file.json")
-	want := labeledDiffCommand("/tmp/diffhance/left/file.json", "/tmp/diffhance/right/file.json", "left/file.json", "right/file.json")
+	got := diffCommand("diff -u", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
+	want := labeledDiffCommand("/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
 	if got != want {
 		t.Fatalf("diffCommand() = %q, want %q", got, want)
 	}
 }
 
 func TestDiffCommandPipesLabeledDiffToDelta(t *testing.T) {
-	got := diffCommand("delta --paging=never", "/tmp/diffhance/left/file.json", "/tmp/diffhance/right/file.json", "left/file.json", "right/file.json")
-	want := "diff -u --label 'left/file.json' --label 'right/file.json' '/tmp/diffhance/left/file.json' '/tmp/diffhance/right/file.json' | delta --paging=never"
+	got := diffCommand("delta --paging=never", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
+	want := "diff -u --label 'l/file.json' --label 'r/file.json' '/tmp/diffhance/l/file.json' '/tmp/diffhance/r/file.json' | delta --paging=never"
 	if runtime.GOOS == "windows" {
-		want = `diff -u --label "left/file.json" --label "right/file.json" "/tmp/diffhance/left/file.json" "/tmp/diffhance/right/file.json" | delta --paging=never`
+		want = `diff -u --label "l/file.json" --label "r/file.json" "/tmp/diffhance/l/file.json" "/tmp/diffhance/r/file.json" | delta --paging=never`
 	}
 	if got != want {
 		t.Fatalf("diffCommand() = %q, want %q", got, want)
@@ -666,10 +666,10 @@ func TestRunPrintGitModePreservesDisplayPath(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("run --print stdout = %q, want two tab-separated paths", stdout)
 	}
-	if wantSuffix := filepath.Join("left", "Objects", "config.json"); !strings.HasSuffix(parts[0], wantSuffix) {
+	if wantSuffix := filepath.Join(leftPrefix, "Objects", "config.json"); !strings.HasSuffix(parts[0], wantSuffix) {
 		t.Fatalf("left staged path = %q, want suffix %q", parts[0], wantSuffix)
 	}
-	if wantSuffix := filepath.Join("right", "Objects", "config.json"); !strings.HasSuffix(parts[1], wantSuffix) {
+	if wantSuffix := filepath.Join(rightPrefix, "Objects", "config.json"); !strings.HasSuffix(parts[1], wantSuffix) {
 		t.Fatalf("right staged path = %q, want suffix %q", parts[1], wantSuffix)
 	}
 }
@@ -752,10 +752,10 @@ func TestRunDefaultDiffUsesCleanLabels(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(stdout, "--- "+filepath.Join("left", "Objects", "config.json")) {
+	if !strings.Contains(stdout, "--- "+filepath.Join(leftPrefix, "Objects", "config.json")) {
 		t.Fatalf("diff stdout = %q, want left clean label", stdout)
 	}
-	if !strings.Contains(stdout, "+++ "+filepath.Join("right", "Objects", "config.json")) {
+	if !strings.Contains(stdout, "+++ "+filepath.Join(rightPrefix, "Objects", "config.json")) {
 		t.Fatalf("diff stdout = %q, want right clean label", stdout)
 	}
 	if strings.Contains(stdout, tmp) || strings.Contains(stdout, "diffhance-") {
@@ -791,10 +791,10 @@ func TestRunDeltaUsesCleanLabels(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(stdout, "--- "+filepath.Join("left", "Objects", "config.json")) {
+	if !strings.Contains(stdout, "--- "+filepath.Join(leftPrefix, "Objects", "config.json")) {
 		t.Fatalf("delta stdout = %q, want left clean label", stdout)
 	}
-	if !strings.Contains(stdout, "+++ "+filepath.Join("right", "Objects", "config.json")) {
+	if !strings.Contains(stdout, "+++ "+filepath.Join(rightPrefix, "Objects", "config.json")) {
 		t.Fatalf("delta stdout = %q, want right clean label", stdout)
 	}
 	if strings.Contains(stdout, tmp) || strings.Contains(stdout, "diffhance-") {

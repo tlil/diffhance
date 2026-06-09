@@ -82,6 +82,11 @@ type stringSlice []string
 func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
+const (
+	leftPrefix  = "l"
+	rightPrefix = "r"
+)
+
 type options struct {
 	pre, preLeft, preRight string
 	diff                   string
@@ -328,11 +333,11 @@ func run(o *options) (int, error) {
 		defer os.RemoveAll(tmpDir)
 	}
 
-	leftOut, err := stage(tmpDir, "left", displayPath, leftPath, leftCmd)
+	leftOut, err := stage(tmpDir, leftPrefix, displayPath, leftPath, leftCmd)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess left: %w", err)
 	}
-	rightOut, err := stage(tmpDir, "right", displayPath, rightPath, rightCmd)
+	rightOut, err := stage(tmpDir, rightPrefix, displayPath, rightPath, rightCmd)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess right: %w", err)
 	}
@@ -342,8 +347,8 @@ func run(o *options) (int, error) {
 		return 0, nil
 	}
 
-	leftLabel := filepath.Join("left", stageDisplayPath(displayPath, "left"))
-	rightLabel := filepath.Join("right", stageDisplayPath(displayPath, "right"))
+	leftLabel := filepath.Join(leftPrefix, stageDisplayPath(displayPath, leftPrefix))
+	rightLabel := filepath.Join(rightPrefix, stageDisplayPath(displayPath, rightPrefix))
 	code, err := runDiff(o, leftOut, rightOut, leftLabel, rightLabel)
 	// Git treats any non-zero exit from GIT_EXTERNAL_DIFF as fatal. The "files
 	// differ" signal (exit 1) is meaningless to git here — it already knew
