@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -551,6 +552,46 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
+func TestDiffCommandLabelsBareDiff(t *testing.T) {
+	got := diffCommand("diff -u", "/tmp/diffhance/left/file.json", "/tmp/diffhance/right/file.json", "left/file.json", "right/file.json")
+	want := labeledDiffCommand("/tmp/diffhance/left/file.json", "/tmp/diffhance/right/file.json", "left/file.json", "right/file.json")
+	if got != want {
+		t.Fatalf("diffCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestDiffCommandPipesLabeledDiffToDelta(t *testing.T) {
+	got := diffCommand("delta --paging=never", "/tmp/diffhance/left/file.json", "/tmp/diffhance/right/file.json", "left/file.json", "right/file.json")
+	want := "diff -u --label 'left/file.json' --label 'right/file.json' '/tmp/diffhance/left/file.json' '/tmp/diffhance/right/file.json' | delta --paging=never"
+	if runtime.GOOS == "windows" {
+		want = `diff -u --label "left/file.json" --label "right/file.json" "/tmp/diffhance/left/file.json" "/tmp/diffhance/right/file.json" | delta --paging=never`
+	}
+	if got != want {
+		t.Fatalf("diffCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestDiffCommandDoesNotLabelCustomOrAlreadyLabeledBackends(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+	}{
+		{name: "custom backend", cmd: "difft --display inline"},
+		{name: "existing label", cmd: "diff -u --label old --label new"},
+		{name: "end of options", cmd: "diff -u --"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diffCommand(tt.cmd, "left", "right", "left-label", "right-label")
+			want := tt.cmd + " " + shellQuote("left") + " " + shellQuote("right")
+			if got != want {
+				t.Fatalf("diffCommand() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRunPrintAppliesRulesByFileBasename(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("preprocessing command is POSIX-specific")
@@ -683,6 +724,81 @@ func TestRunNonGitPreservesDiffExitOne(t *testing.T) {
 	}
 	if code != 1 {
 		t.Fatalf("run() code = %d, want 1 when files differ outside git mode", code)
+	}
+}
+
+func TestRunDefaultDiffUsesCleanLabels(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("default diff backend is not available on Windows")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "old.txt")
+	right := filepath.Join(tmp, "new.txt")
+	if err := os.WriteFile(left, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code, err := run(&options{git: true, noColor: true, diff: "diff -u", args: []string{filepath.Join("Objects", "config.json"), left, "oldhex", "100644", right, "newhex", "100644"}})
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("run() code = %d, want 0 in git mode when files differ", code)
+		}
+	})
+
+	if !strings.Contains(stdout, "--- "+filepath.Join("left", "Objects", "config.json")) {
+		t.Fatalf("diff stdout = %q, want left clean label", stdout)
+	}
+	if !strings.Contains(stdout, "+++ "+filepath.Join("right", "Objects", "config.json")) {
+		t.Fatalf("diff stdout = %q, want right clean label", stdout)
+	}
+	if strings.Contains(stdout, tmp) || strings.Contains(stdout, "diffhance-") {
+		t.Fatalf("diff stdout = %q, want no temp path prefix", stdout)
+	}
+}
+
+func TestRunDeltaUsesCleanLabels(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell pipeline is POSIX-specific")
+	}
+	if _, err := exec.LookPath("delta"); err != nil {
+		t.Skip("delta is not installed")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "old.txt")
+	right := filepath.Join(tmp, "new.txt")
+	if err := os.WriteFile(left, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code, err := run(&options{git: true, noColor: true, diff: "delta --paging=never --color-only", args: []string{filepath.Join("Objects", "config.json"), left, "oldhex", "100644", right, "newhex", "100644"}})
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("run() code = %d, want 0", code)
+		}
+	})
+
+	if !strings.Contains(stdout, "--- "+filepath.Join("left", "Objects", "config.json")) {
+		t.Fatalf("delta stdout = %q, want left clean label", stdout)
+	}
+	if !strings.Contains(stdout, "+++ "+filepath.Join("right", "Objects", "config.json")) {
+		t.Fatalf("delta stdout = %q, want right clean label", stdout)
+	}
+	if strings.Contains(stdout, tmp) || strings.Contains(stdout, "diffhance-") {
+		t.Fatalf("delta stdout = %q, want no temp path prefix", stdout)
 	}
 }
 

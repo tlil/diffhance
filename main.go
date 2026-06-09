@@ -342,7 +342,9 @@ func run(o *options) (int, error) {
 		return 0, nil
 	}
 
-	code, err := runDiff(o, leftOut, rightOut)
+	leftLabel := filepath.Join("left", stageDisplayPath(displayPath, "left"))
+	rightLabel := filepath.Join("right", stageDisplayPath(displayPath, "right"))
+	code, err := runDiff(o, leftOut, rightOut, leftLabel, rightLabel)
 	// Git treats any non-zero exit from GIT_EXTERNAL_DIFF as fatal. The "files
 	// differ" signal (exit 1) is meaningless to git here — it already knew
 	// they differ, that's why it invoked us — so swallow it in --git mode.
@@ -514,12 +516,12 @@ func shell() (string, string) {
 	return "/bin/sh", "-c"
 }
 
-func runDiff(o *options, left, right string) (int, error) {
+func runDiff(o *options, left, right, leftLabel, rightLabel string) (int, error) {
 	cmdline := o.diff
 	if !o.noColor && shouldColor() {
 		cmdline = injectColor(cmdline)
 	}
-	full := cmdline + " " + shellQuote(left) + " " + shellQuote(right)
+	full := diffCommand(cmdline, left, right, leftLabel, rightLabel)
 	shellBin, flag := shell()
 	c := exec.Command(shellBin, flag, full)
 	c.Stdout = os.Stdout
@@ -535,6 +537,46 @@ func runDiff(o *options, left, right string) (int, error) {
 		return 2, err
 	}
 	return 0, nil
+}
+
+func diffCommand(cmdline, left, right, leftLabel, rightLabel string) string {
+	if shouldPipeLabeledDiff(cmdline) {
+		return labeledDiffCommand(left, right, leftLabel, rightLabel) + " | " + cmdline
+	}
+	if shouldLabelBareDiff(cmdline) {
+		cmdline += " --label " + shellQuote(leftLabel) + " --label " + shellQuote(rightLabel)
+	}
+	return cmdline + " " + shellQuote(left) + " " + shellQuote(right)
+}
+
+func labeledDiffCommand(left, right, leftLabel, rightLabel string) string {
+	return "diff -u --label " + shellQuote(leftLabel) + " --label " + shellQuote(rightLabel) + " " + shellQuote(left) + " " + shellQuote(right)
+}
+
+func shouldLabelBareDiff(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 || filepath.Base(fields[0]) != "diff" {
+		return false
+	}
+	for _, f := range fields[1:] {
+		if f == "--" || f == "--label" || strings.HasPrefix(f, "--label=") {
+			return false
+		}
+	}
+	return true
+}
+
+func shouldPipeLabeledDiff(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return false
+	}
+	switch filepath.Base(fields[0]) {
+	case "delta":
+		return true
+	default:
+		return false
+	}
 }
 
 // shouldColor returns true when stdout is a terminal and NO_COLOR is unset.

@@ -25,6 +25,7 @@
 - `--print-rules` prints the resolved rules to stdout, one per line, after explicit and default configs are loaded; it exits without requiring positional file args or running preprocess/diff.
 - `--print-config-dirs` prints the default config file paths checked, one per line, without reading them; it exits without requiring positional file args or running preprocess/diff.
 - Default diff backend is `diff -u`; color injection only appends `--color=always` for bare `diff` when stdout is a terminal and `NO_COLOR` is unset.
+- Bare `diff` backends get `--label left/... --label right/...` for clean unified diff headers; `delta` backends receive a labeled `diff -u` stream; other custom backends and already-labeled diff commands are left unchanged.
 
 ## CI
 - `.github/workflows/build.yml` runs `go test ./...` in a dedicated `test` job before building binaries.
