@@ -3,6 +3,7 @@
 //
 //	diffhance --pre 'jq .' a.json b.json
 //	diffhance --rule '*.json:jq .' --rule '*.xml:xmllint --format -' a b
+//	diffhance --config .diffhance-rules a b
 //	GIT_EXTERNAL_DIFF='diffhance --git --rule "*.json:jq ."' git diff HEAD~1
 package main
 
@@ -29,6 +30,10 @@ FLAGS
       --pre-right CMD      Shell pipeline applied to RIGHT side only
   -r, --rule GLOB:CMD      Apply CMD when the file's basename matches GLOB (repeatable).
                            First matching rule wins. Ignored when --pre/--pre-* is set.
+  -c, --config PATH        Read rules from PATH, one GLOB:CMD per line. Blank lines and
+                           lines starting with # are ignored. May be repeated.
+                           Existing default configs are also loaded from the platform's
+                           config directories as diffhance/rules.
   -d, --diff CMD           Diff backend (default: "diff -u"). Receives preprocessed
                            LEFT and RIGHT as the last two positional args.
       --git                Treat positional args as git's external-diff invocation:
@@ -47,6 +52,9 @@ EXAMPLES
 
   # Per-extension rules
   diffhance -r '*.json:jq .' -r '*.xml:xmllint --format -' a/ b/   # (per file)
+
+  # Rules from a config file
+  diffhance --config .diffhance-rules a.json b.json
 
   # Pipe two preprocessed files into your own pipeline
   read L R < <(diffhance --print --pre 'jq .' a.json b.json); diff -u "$L" "$R"
@@ -170,6 +178,28 @@ func parseArgs(argv []string) (*options, error) {
 			o.rules = append(o.rules, strings.TrimPrefix(a, "--rule="))
 		case strings.HasPrefix(a, "-r") && len(a) > 2:
 			o.rules = append(o.rules, a[2:])
+		case a == "-c", a == "--config":
+			v, err := take(&i, a)
+			if err != nil {
+				return nil, err
+			}
+			rules, err := readRulesFile(v)
+			if err != nil {
+				return nil, err
+			}
+			o.rules = append(o.rules, rules...)
+		case strings.HasPrefix(a, "--config="):
+			rules, err := readRulesFile(strings.TrimPrefix(a, "--config="))
+			if err != nil {
+				return nil, err
+			}
+			o.rules = append(o.rules, rules...)
+		case strings.HasPrefix(a, "-c") && len(a) > 2:
+			rules, err := readRulesFile(a[2:])
+			if err != nil {
+				return nil, err
+			}
+			o.rules = append(o.rules, rules...)
 		case strings.HasPrefix(a, "-") && a != "-":
 			return nil, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -180,7 +210,73 @@ func parseArgs(argv []string) (*options, error) {
 	if o.diff == "" {
 		o.diff = "diff -u"
 	}
+	rules, err := readExistingRulesFiles(defaultRulesConfigPaths())
+	if err != nil {
+		return nil, err
+	}
+	o.rules = append(o.rules, rules...)
 	return o, nil
+}
+
+var defaultRulesConfigPaths = platformRulesConfigPaths
+
+func platformRulesConfigPaths() []string {
+	var paths []string
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		paths = append(paths, filepath.Join(dir, "diffhance", "rules"))
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		if dir := os.Getenv("ProgramData"); dir != "" {
+			paths = append(paths, filepath.Join(dir, "diffhance", "rules"))
+		}
+	case "darwin":
+		paths = append(paths, filepath.Join(string(filepath.Separator), "Library", "Application Support", "diffhance", "rules"))
+	default:
+		dirs := os.Getenv("XDG_CONFIG_DIRS")
+		if dirs == "" {
+			dirs = filepath.Join(string(filepath.Separator), "etc", "xdg")
+		}
+		for _, dir := range filepath.SplitList(dirs) {
+			if dir != "" {
+				paths = append(paths, filepath.Join(dir, "diffhance", "rules"))
+			}
+		}
+	}
+	return paths
+}
+
+func readExistingRulesFiles(paths []string) ([]string, error) {
+	var rules []string
+	for _, path := range paths {
+		fileRules, err := readRulesFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		rules = append(rules, fileRules...)
+	}
+	return rules, nil
+}
+
+func readRulesFile(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config %q: %w", path, err)
+	}
+
+	var rules []string
+	for line := range strings.SplitSeq(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rules = append(rules, line)
+	}
+	return rules, nil
 }
 
 func run(o *options) (int, error) {

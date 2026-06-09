@@ -11,6 +11,11 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	defaultRulesConfigPaths = func() []string { return nil }
+	os.Exit(m.Run())
+}
+
 func TestParseArgsValidForms(t *testing.T) {
 	tests := []struct {
 		name string
@@ -62,6 +67,47 @@ func TestParseArgsValidForms(t *testing.T) {
 	}
 }
 
+func TestParseArgsConfigRules(t *testing.T) {
+	tmp := t.TempDir()
+	config := filepath.Join(tmp, "rules.conf")
+	if err := os.WriteFile(config, []byte("\n# comment\n*.json:jq -S .\n*.xml:xmllint --format -\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := parseArgs([]string{"--rule", "*.txt:fmt-txt", "--config", config, "--rule=*.yaml:fmt-yaml", "left", "right"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	want := options{
+		diff:  "diff -u",
+		rules: []string{"*.txt:fmt-txt", "*.json:jq -S .", "*.xml:xmllint --format -", "*.yaml:fmt-yaml"},
+		args:  []string{"left", "right"},
+	}
+	if !reflect.DeepEqual(*got, want) {
+		t.Fatalf("parseArgs() = %#v, want %#v", *got, want)
+	}
+}
+
+func TestParseArgsConfigEqualsAndShortAttached(t *testing.T) {
+	tmp := t.TempDir()
+	config1 := filepath.Join(tmp, "rules1.conf")
+	config2 := filepath.Join(tmp, "rules2.conf")
+	if err := os.WriteFile(config1, []byte("*.json:jq .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config2, []byte("*.xml:xmllint --format -\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := parseArgs([]string{"--config=" + config1, "-c" + config2, "left", "right"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	if want := []string{"*.json:jq .", "*.xml:xmllint --format -"}; !reflect.DeepEqual(got.rules, want) {
+		t.Fatalf("rules = %#v, want %#v", got.rules, want)
+	}
+}
+
 func TestParseArgsErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -73,6 +119,7 @@ func TestParseArgsErrors(t *testing.T) {
 		{name: "pre-right missing value", argv: []string{"--pre-right"}, wantErr: "flag --pre-right requires a value"},
 		{name: "diff missing value", argv: []string{"--diff"}, wantErr: "flag --diff requires a value"},
 		{name: "rule missing value", argv: []string{"--rule"}, wantErr: "flag --rule requires a value"},
+		{name: "config missing value", argv: []string{"--config"}, wantErr: "flag --config requires a value"},
 		{name: "unknown flag", argv: []string{"--wat"}, wantErr: "unknown flag \"--wat\""},
 	}
 
@@ -83,6 +130,52 @@ func TestParseArgsErrors(t *testing.T) {
 				t.Fatalf("parseArgs() error = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestParseArgsConfigReadError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.conf")
+	_, err := parseArgs([]string{"--config", missing, "left", "right"})
+	if err == nil || !strings.Contains(err.Error(), "read config") || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("parseArgs() error = %v, want config read error", err)
+	}
+}
+
+func TestParseArgsLoadsDefaultConfigRules(t *testing.T) {
+	tmp := t.TempDir()
+	userConfig := filepath.Join(tmp, "user", "diffhance", "rules")
+	systemConfig := filepath.Join(tmp, "system", "diffhance", "rules")
+	missingConfig := filepath.Join(tmp, "missing", "diffhance", "rules")
+	if err := os.MkdirAll(filepath.Dir(userConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(systemConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userConfig, []byte("*.json:user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(systemConfig, []byte("*.xml:system\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withDefaultRulesConfigPaths(t, []string{userConfig, missingConfig, systemConfig})
+
+	got, err := parseArgs([]string{"--rule", "*.txt:inline", "left", "right"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	if want := []string{"*.txt:inline", "*.json:user", "*.xml:system"}; !reflect.DeepEqual(got.rules, want) {
+		t.Fatalf("rules = %#v, want %#v", got.rules, want)
+	}
+}
+
+func TestParseArgsDefaultConfigReadError(t *testing.T) {
+	dir := t.TempDir()
+	withDefaultRulesConfigPaths(t, []string{dir})
+
+	_, err := parseArgs([]string{"left", "right"})
+	if err == nil || !strings.Contains(err.Error(), "read config") || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("parseArgs() error = %v, want default config read error", err)
 	}
 }
 
@@ -510,4 +603,11 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+func withDefaultRulesConfigPaths(t *testing.T, paths []string) {
+	t.Helper()
+	orig := defaultRulesConfigPaths
+	defaultRulesConfigPaths = func() []string { return paths }
+	t.Cleanup(func() { defaultRulesConfigPaths = orig })
 }

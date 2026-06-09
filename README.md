@@ -32,6 +32,9 @@ diffhance --pre 'jq -S .' -d 'delta --paging=never' old.json new.json
 # Only preprocess files whose basename matches a glob
 diffhance -r '*.json:jq -S .' -r '*.xml:xmllint --format -' a b
 
+# Load preprocessing rules from a config file
+diffhance --config ~/.config/diffhance/rules a.json b.json
+
 # Just emit the preprocessed file paths and pipe them yourself
 read L R < <(diffhance --print --pre 'jq -S .' a.json b.json)
 diff -u "$L" "$R"
@@ -62,11 +65,27 @@ because git treats any non-zero exit from an external diff as fatal.
 | `-p, --pre CMD`                     | Shell pipeline applied to both sides (file streamed on stdin)                                                            |
 | `--pre-left CMD`, `--pre-right CMD` | Per-side overrides                                                                                                       |
 | `-r, --rule GLOB:CMD`               | Apply `CMD` when the file's basename matches `GLOB` (repeatable, first match wins). Ignored if `--pre`/`--pre-*` is set. |
+| `-c, --config PATH`                 | Read rules from `PATH`, one `GLOB:CMD` per line. Blank lines and lines starting with `#` are ignored.                    |
 | `-d, --diff CMD`                    | Diff backend (default `diff -u`). The two preprocessed paths are appended as the last two positional args.               |
 | `--git`                             | Treat positional args as git's external-diff invocation                                                                  |
 | `--print`                           | Skip diffing; print `LEFT-PATH\tRIGHT-PATH` of the preprocessed files                                                    |
 | `--no-color`                        | Don't auto-inject `--color=always` into the default `diff` backend                                                       |
 | `-h, --help`                        | Show help                                                                                                                |
+
+## Rules config
+
+Rules config files use the same `GLOB:CMD` format as `--rule`, one rule per
+line. Existing default configs are loaded automatically from `diffhance/rules`
+under the platform config directories, then appended after any explicit
+`--rule` or `--config` rules.
+
+Default locations:
+
+| Platform | Locations |
+| -------- | --------- |
+| macOS | `~/Library/Application Support/diffhance/rules`, `/Library/Application Support/diffhance/rules` |
+| Linux/Unix | `$XDG_CONFIG_HOME/diffhance/rules` or `~/.config/diffhance/rules`, plus each `$XDG_CONFIG_DIRS/diffhance/rules` or `/etc/xdg/diffhance/rules` |
+| Windows | `%AppData%\diffhance\rules`, `%ProgramData%\diffhance\rules` |
 
 ## How preprocessing works
 
