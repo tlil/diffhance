@@ -367,8 +367,8 @@ func printConfigDirs(paths []string) {
 type side string
 
 // resolveInputs returns left, right, and a "display" path used for rule
-// matching. In --git mode the display path is the repo-relative path that
-// git provides as argv[0].
+// matching and staged output paths. In --git mode the display path is the
+// repo-relative path that git provides as argv[0].
 func resolveInputs(o *options) (left, right, display string, err error) {
 	if o.git {
 		if len(o.args) < 7 {
@@ -380,14 +380,7 @@ func resolveInputs(o *options) (left, right, display string, err error) {
 	if len(o.args) != 2 {
 		return "", "", "", fmt.Errorf("expected exactly 2 positional args (LEFT RIGHT), got %d", len(o.args))
 	}
-	// When the two sides have the same basename, use it for rule matching;
-	// otherwise fall back to the left side.
-	lb, rb := filepath.Base(o.args[0]), filepath.Base(o.args[1])
-	disp := o.args[0]
-	if lb == rb {
-		disp = lb
-	}
-	return o.args[0], o.args[1], disp, nil
+	return o.args[0], o.args[1], o.args[0], nil
 }
 
 func pickPre(o *options, displayPath string, s side) string {
@@ -419,18 +412,18 @@ func pickPre(o *options, displayPath string, s side) string {
 }
 
 // stage either copies src into tmpDir or streams it through cmd, returning
-// the path of the staged file. The staged filename preserves the original
-// basename so diff output stays meaningful.
+// the path of the staged file. The staged path preserves the original display
+// path so diff output stays meaningful.
 func stage(tmpDir, side, displayPath, src, cmd string) (string, error) {
 	sub := filepath.Join(tmpDir, side)
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		return "", err
 	}
-	base := filepath.Base(displayPath)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = side
+	rel := stageDisplayPath(displayPath, side)
+	out := filepath.Join(sub, rel)
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return "", err
 	}
-	out := filepath.Join(sub, base)
 
 	in, err := openInput(src)
 	if err != nil {
@@ -460,6 +453,46 @@ func stage(tmpDir, side, displayPath, src, cmd string) (string, error) {
 		return "", fmt.Errorf("running %q: %w", cmd, err)
 	}
 	return out, nil
+}
+
+func stageDisplayPath(displayPath, fallback string) string {
+	path := filepath.Clean(displayPath)
+	if path == "." || path == string(filepath.Separator) {
+		return fallback
+	}
+	if filepath.IsAbs(path) {
+		if rel, err := filepath.Rel(mustGetwd(), path); err == nil && isSafeRelativePath(rel) {
+			return rel
+		}
+		path = filepath.Base(path)
+	}
+	if !isSafeRelativePath(path) {
+		path = filepath.Base(path)
+	}
+	if path == "." || path == string(filepath.Separator) {
+		return fallback
+	}
+	return path
+}
+
+func isSafeRelativePath(path string) bool {
+	if path == "" || filepath.IsAbs(path) {
+		return false
+	}
+	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }
 
 // openInput opens src for reading. /dev/null on Windows is mapped to NUL so

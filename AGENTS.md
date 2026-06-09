@@ -18,6 +18,7 @@
 - In `--git` mode, a backend diff exit code of `1` is swallowed to `0` because Git treats non-zero external diff exits as fatal.
 - Preprocessors and diff backends run through a shell: `/bin/sh -c` except Windows, where `ComSpec /C` or `cmd /C` is used.
 - `--rule GLOB:CMD` matches only `filepath.Base(displayPath)` and first match wins; explicit `--pre` / `--pre-left` / `--pre-right` override rules.
+- Staged temp paths preserve safe relative `displayPath` directories under `left/` and `right/` so diff headers remain meaningful; unsafe or unrelated absolute display paths fall back to a basename.
 - `--config PATH` reads rules as one `GLOB:CMD` per line, ignoring blank lines and lines starting with `#`; config rules are inserted where the flag appears.
 - Existing default rules configs are auto-loaded from platform config locations as `diffhance/rules` and appended after explicit `--rule` / `--config` rules, so explicit rules keep first-match priority; missing default config files are ignored.
 - `--print` keeps temp files and prints their paths separated by a tab; normal diff mode deletes temp files on exit.

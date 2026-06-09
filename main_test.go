@@ -293,11 +293,11 @@ func TestResolveInputs(t *testing.T) {
 		wantErr     string
 	}{
 		{
-			name:        "same basename uses basename for display",
+			name:        "same basename keeps left path for display",
 			o:           options{args: []string{"old/config.json", "new/config.json"}},
 			wantLeft:    "old/config.json",
 			wantRight:   "new/config.json",
-			wantDisplay: "config.json",
+			wantDisplay: "old/config.json",
 		},
 		{
 			name:        "different basenames use left path for display",
@@ -431,8 +431,8 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 		t.Fatalf("stage(copy) error = %v", err)
 	}
 	assertFileContent(t, out, "hello\n")
-	if filepath.Base(out) != "display.txt" {
-		t.Fatalf("stage output basename = %q, want display.txt", filepath.Base(out))
+	if want := filepath.Join(tmp, "left", "nested", "display.txt"); out != want {
+		t.Fatalf("stage output = %q, want %q", out, want)
 	}
 
 	if runtime.GOOS == "windows" {
@@ -458,6 +458,33 @@ func TestStageUsesSideNameForEmptyDisplayBasename(t *testing.T) {
 	}
 	if filepath.Base(out) != "left" {
 		t.Fatalf("stage output basename = %q, want left", filepath.Base(out))
+	}
+}
+
+func TestStageDisplayPath(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		displayPath string
+		want        string
+	}{
+		{name: "relative nested path", displayPath: filepath.Join("Objects", "config.json"), want: filepath.Join("Objects", "config.json")},
+		{name: "absolute path under cwd", displayPath: filepath.Join(wd, "Objects", "config.json"), want: filepath.Join("Objects", "config.json")},
+		{name: "absolute path outside cwd", displayPath: filepath.Join(os.TempDir(), "config.json"), want: "config.json"},
+		{name: "parent traversal falls back to basename", displayPath: filepath.Join("..", "Objects", "config.json"), want: "config.json"},
+		{name: "empty path uses fallback", displayPath: "", want: "left"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stageDisplayPath(tt.displayPath, "left"); got != tt.want {
+				t.Fatalf("stageDisplayPath(%q) = %q, want %q", tt.displayPath, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -566,6 +593,44 @@ func TestRunPrintAppliesRulesByFileBasename(t *testing.T) {
 	}
 	assertFileContent(t, parts[0], "ABC\n")
 	assertFileContent(t, parts[1], "DEF\n")
+}
+
+func TestRunPrintGitModePreservesDisplayPath(t *testing.T) {
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "old-file")
+	right := filepath.Join(tmp, "new-file")
+	if err := os.WriteFile(left, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code, err := run(&options{
+			git:        true,
+			printPaths: true,
+			diff:       "diff -u",
+			args:       []string{filepath.Join("Objects", "config.json"), left, "oldhex", "100644", right, "newhex", "100644"},
+		})
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("run() code = %d, want 0", code)
+		}
+	})
+
+	parts := strings.Split(strings.TrimSpace(stdout), "\t")
+	if len(parts) != 2 {
+		t.Fatalf("run --print stdout = %q, want two tab-separated paths", stdout)
+	}
+	if wantSuffix := filepath.Join("left", "Objects", "config.json"); !strings.HasSuffix(parts[0], wantSuffix) {
+		t.Fatalf("left staged path = %q, want suffix %q", parts[0], wantSuffix)
+	}
+	if wantSuffix := filepath.Join("right", "Objects", "config.json"); !strings.HasSuffix(parts[1], wantSuffix) {
+		t.Fatalf("right staged path = %q, want suffix %q", parts[1], wantSuffix)
+	}
 }
 
 func TestRunGitModeSwallowsDiffExitOne(t *testing.T) {
