@@ -24,7 +24,12 @@ const usage = `diffhance - preprocess each side of a diff before diffing
 
 USAGE
   diffhance [flags] LEFT RIGHT
+  diffhance [flags] git [GIT-DIFF-ARGS...]
   diffhance --git [flags] PATH OLD-FILE OLD-HEX OLD-MODE NEW-FILE NEW-HEX NEW-MODE [RENAME-TO RENAME-MODE]
+
+GIT SHORTHAND
+  "diffhance [flags] git ..." runs "git diff ..." with GIT_EXTERNAL_DIFF set to
+  this binary in --git mode, forwarding any flags given before "git".
 
 FLAGS
   -p, --pre CMD            Shell pipeline applied to BOTH sides (file streamed on stdin)
@@ -73,6 +78,9 @@ EXAMPLES
   GIT_EXTERNAL_DIFF='diffhance --git --rule "*.json:jq ." -d "diff -u"' \
       git diff HEAD~1 HEAD
 
+  # Same, via the git shorthand (flags before "git" are forwarded)
+  diffhance -r '*.json:jq .' git HEAD~1 HEAD
+
 EXIT STATUS
   Mirrors the diff backend (0 = identical, 1 = differ, >1 = error).
 `
@@ -100,6 +108,17 @@ type options struct {
 }
 
 func main() {
+	if forward, gitArgs, ok := splitGitShorthand(os.Args[1:]); ok {
+		code, err := runGitDiff(forward, gitArgs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "diffhance: %v\n", err)
+			if code == 0 {
+				code = 2
+			}
+		}
+		os.Exit(code)
+	}
+
 	opts, err := parseArgs(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, errHelp) {
@@ -120,6 +139,78 @@ func main() {
 }
 
 var errHelp = errors.New("help requested")
+
+// valueFlags lists flags that consume the following argument as their value.
+var valueFlags = map[string]bool{
+	"-p": true, "--pre": true,
+	"--pre-left": true, "--pre-right": true,
+	"-d": true, "--diff": true,
+	"-r": true, "--rule": true,
+	"-c": true, "--config": true,
+}
+
+// splitGitShorthand detects the "diffhance [flags] git ..." shorthand, where
+// the first positional argument is the literal word "git". It returns the
+// flags preceding "git" (forwarded to the GIT_EXTERNAL_DIFF command) and the
+// arguments following it (passed through to "git diff").
+func splitGitShorthand(argv []string) (forward, gitArgs []string, ok bool) {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "git":
+			return argv[:i], argv[i+1:], true
+		case a == "--":
+			// Explicit end of flags: positionals are LEFT/RIGHT files.
+			return nil, nil, false
+		case valueFlags[a]:
+			i++ // skip the flag's value; parseArgs reports missing values
+		case strings.HasPrefix(a, "-") && a != "-":
+			// Flag with attached value (or boolean); nothing extra to skip.
+		default:
+			// First positional is not "git": normal LEFT/RIGHT mode.
+			return nil, nil, false
+		}
+	}
+	return nil, nil, false
+}
+
+// executablePath is swapped in tests.
+var executablePath = func() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return os.Args[0]
+}
+
+// runGitDiff implements "diffhance [flags] git [ARGS...]": it runs
+// "git diff ARGS..." with GIT_EXTERNAL_DIFF pointing back at this binary in
+// --git mode, forwarding any diffhance flags that preceded "git".
+func runGitDiff(forward, gitArgs []string) (int, error) {
+	c := exec.Command("git", append([]string{"diff"}, gitArgs...)...)
+	c.Env = append(os.Environ(), "GIT_EXTERNAL_DIFF="+gitExternalDiffCommand(executablePath(), forward))
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return 2, fmt.Errorf("running git diff: %w", err)
+	}
+	return 0, nil
+}
+
+// gitExternalDiffCommand builds the GIT_EXTERNAL_DIFF command string. Git
+// always runs external diff commands through a POSIX shell (on Windows via
+// Git's bundled sh), so single-quote quoting applies on every platform.
+func gitExternalDiffCommand(exe string, forward []string) string {
+	parts := []string{posixQuote(exe), "--git"}
+	for _, f := range forward {
+		parts = append(parts, posixQuote(f))
+	}
+	return strings.Join(parts, " ")
+}
 
 // parseArgs implements a small POSIX-ish flag parser so we can support both
 // "--pre CMD" and "--pre=CMD" plus short forms like "-p CMD" / "-pCMD",
@@ -619,5 +710,9 @@ func shellQuote(s string) string {
 	if runtime.GOOS == "windows" {
 		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 	}
+	return posixQuote(s)
+}
+
+func posixQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

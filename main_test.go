@@ -14,6 +14,12 @@ import (
 
 func TestMain(m *testing.M) {
 	defaultRulesConfigPaths = func() []string { return nil }
+	// Allow the test binary to act as the real diffhance binary so the git
+	// shorthand integration test can use it as GIT_EXTERNAL_DIFF.
+	if os.Getenv("DIFFHANCE_TEST_RUN_MAIN") == "1" {
+		main()
+		return
+	}
 	os.Exit(m.Run())
 }
 
@@ -826,6 +832,175 @@ func TestRunErrors(t *testing.T) {
 	}
 	if err == nil || code != 2 || !strings.Contains(err.Error(), "preprocess left") {
 		t.Fatalf("run() = (%d, %v), want code 2 with left preprocess error", code, err)
+	}
+}
+
+func TestSplitGitShorthand(t *testing.T) {
+	tests := []struct {
+		name        string
+		argv        []string
+		wantForward []string
+		wantGitArgs []string
+		wantOK      bool
+	}{
+		{
+			name:        "bare git",
+			argv:        []string{"git"},
+			wantForward: []string{},
+			wantGitArgs: []string{},
+			wantOK:      true,
+		},
+		{
+			name:        "git with passthrough args",
+			argv:        []string{"git", "HEAD~1", "--stat"},
+			wantForward: []string{},
+			wantGitArgs: []string{"HEAD~1", "--stat"},
+			wantOK:      true,
+		},
+		{
+			name:        "flags before git are forwarded",
+			argv:        []string{"-r", "*.json:jq .", "--no-color", "git", "HEAD~1"},
+			wantForward: []string{"-r", "*.json:jq .", "--no-color"},
+			wantGitArgs: []string{"HEAD~1"},
+			wantOK:      true,
+		},
+		{
+			name:        "equals-form flag before git",
+			argv:        []string{"--pre=jq .", "git"},
+			wantForward: []string{"--pre=jq ."},
+			wantGitArgs: []string{},
+			wantOK:      true,
+		},
+		{
+			name: "git as a flag value is not the shorthand",
+			argv: []string{"-r", "git", "left", "right"},
+		},
+		{
+			name: "first positional not git",
+			argv: []string{"--no-color", "left", "right"},
+		},
+		{
+			name: "double dash disables the shorthand",
+			argv: []string{"--", "git", "right"},
+		},
+		{
+			name: "git external diff invocation is not the shorthand",
+			argv: []string{"--git", "path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"},
+		},
+		{
+			name: "empty argv",
+			argv: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			forward, gitArgs, ok := splitGitShorthand(tt.argv)
+			if ok != tt.wantOK {
+				t.Fatalf("splitGitShorthand(%q) ok = %v, want %v", tt.argv, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if !reflect.DeepEqual(forward, tt.wantForward) {
+				t.Fatalf("splitGitShorthand(%q) forward = %#v, want %#v", tt.argv, forward, tt.wantForward)
+			}
+			if !reflect.DeepEqual(gitArgs, tt.wantGitArgs) {
+				t.Fatalf("splitGitShorthand(%q) gitArgs = %#v, want %#v", tt.argv, gitArgs, tt.wantGitArgs)
+			}
+		})
+	}
+}
+
+func TestGitExternalDiffCommand(t *testing.T) {
+	got := gitExternalDiffCommand("/opt/dif fhance/diffhance", []string{"-r", "*.json:jq ."})
+	want := `'/opt/dif fhance/diffhance' --git '-r' '*.json:jq .'`
+	if got != want {
+		t.Fatalf("gitExternalDiffCommand() = %q, want %q", got, want)
+	}
+
+	got = gitExternalDiffCommand("diffhance", nil)
+	want = `'diffhance' --git`
+	if got != want {
+		t.Fatalf("gitExternalDiffCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestPosixQuote(t *testing.T) {
+	if got, want := posixQuote(`it's`), `'it'\''s'`; got != want {
+		t.Fatalf("posixQuote() = %q, want %q", got, want)
+	}
+}
+
+func TestRunGitDiffRunsGitDiffWithExternalDiff(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test relies on the POSIX default diff backend")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := t.TempDir()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(repo, "gitconfig"))
+	t.Setenv("GIT_AUTHOR_NAME", "test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+	// Re-invocations of this test binary act as the real diffhance binary.
+	t.Setenv("DIFFHANCE_TEST_RUN_MAIN", "1")
+
+	gitInRepo := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	file := filepath.Join(repo, "a.txt")
+	gitInRepo("init", "-q")
+	if err := os.WriteFile(file, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInRepo("add", "a.txt")
+	gitInRepo("commit", "-q", "-m", "init")
+	if err := os.WriteFile(file, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(repo)
+	stdout := captureStdout(t, func() {
+		code, err := runGitDiff([]string{"--no-color", "--pre", "tr a-z A-Z"}, nil)
+		if err != nil {
+			t.Fatalf("runGitDiff() error = %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("runGitDiff() code = %d, want 0", code)
+		}
+	})
+
+	if !strings.Contains(stdout, "-OLD") || !strings.Contains(stdout, "+NEW") {
+		t.Fatalf("runGitDiff() stdout = %q, want preprocessed -OLD/+NEW hunks", stdout)
+	}
+}
+
+func TestRunGitDiffPropagatesGitFailure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", dir)
+	t.Chdir(dir)
+
+	code, err := runGitDiff(nil, nil)
+	if err != nil {
+		t.Fatalf("runGitDiff() error = %v, want nil for git exit failure", err)
+	}
+	if code == 0 {
+		t.Fatalf("runGitDiff() code = 0, want non-zero outside a git repository")
 	}
 }
 

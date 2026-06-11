@@ -26,6 +26,7 @@
 - `--print-config-dirs` prints the default config file paths checked, one per line, without reading them; it exits without requiring positional file args or running preprocess/diff.
 - Default diff backend is `diff -u`; color injection only appends `--color=always` for bare `diff` when stdout is a terminal and `NO_COLOR` is unset.
 - Bare `diff` backends get `--label l/... --label r/...` for clean unified diff headers; `delta` backends receive a labeled `diff -u` stream; other custom backends and already-labeled diff commands are left unchanged.
+- `diffhance [flags] git [args...]` (first positional arg is the literal `git`) runs `git diff [args...]` with `GIT_EXTERNAL_DIFF` set to the current binary (`os.Executable()`) in `--git` mode; flags before `git` are forwarded into that command with POSIX single-quote quoting (git always uses a POSIX shell for external diffs, even on Windows), git's exit code is propagated, and `--` before `git` disables the shorthand.
 
 ## CI
 - `.github/workflows/build.yml` runs `go test ./...` in a dedicated `test` job before building binaries.

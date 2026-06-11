@@ -64,6 +64,22 @@ GIT_EXTERNAL_DIFF="diffhance --git -r '*.json:jq -S .'" git diff HEAD~1 HEAD | d
 In `--git` mode diffhance always exits 0 (even when the files differ),
 because git treats any non-zero exit from an external diff as fatal.
 
+### `git` shorthand
+
+`diffhance [flags] git [args...]` is shorthand for the one-off invocation
+above: it runs `git diff [args...]` (resolving `git` from your `PATH` as
+usual) with `GIT_EXTERNAL_DIFF` set to this diffhance binary in `--git`
+mode. Any flags given before `git` are forwarded to the external-diff
+command, and diffhance exits with `git diff`'s exit code.
+
+```sh
+# Equivalent to GIT_EXTERNAL_DIFF="diffhance --git -r '*.json:jq -S .'" git diff HEAD~1 HEAD
+diffhance -r '*.json:jq -S .' git HEAD~1 HEAD
+
+# Args after "git" pass straight through to git diff
+diffhance git --staged -- path/to/file.json
+```
+
 ## Flags
 
 | Flag                                | Description                                                                                                              |
@@ -74,6 +90,7 @@ because git treats any non-zero exit from an external diff as fatal.
 | `-c, --config PATH`                 | Read rules from `PATH`, one `GLOB:CMD` per line. Blank lines and lines starting with `#` are ignored.                    |
 | `-d, --diff CMD`                    | Diff backend (default `diff -u`). The two preprocessed paths are appended as the last two positional args.               |
 | `--git`                             | Treat positional args as git's external-diff invocation                                                                  |
+| `git [args...]`                     | Shorthand: run `git diff [args...]` with `GIT_EXTERNAL_DIFF` set to this binary; preceding flags are forwarded           |
 | `--print`                           | Skip diffing; print `LEFT-PATH\tRIGHT-PATH` of the preprocessed files                                                    |
 | `--print-rules`                     | Print resolved rules to stdout, one per line, then exit                                                                  |
 | `--print-config-dirs`               | Print default config file locations checked, one per line, then exit                                                     |
