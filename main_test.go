@@ -573,11 +573,11 @@ func TestDiffCommandLabelsBareDiff(t *testing.T) {
 	}
 }
 
-func TestDiffCommandPipesLabeledDiffToDelta(t *testing.T) {
+func TestDiffCommandAppendsPathsToDelta(t *testing.T) {
 	got := diffCommand("delta --paging=never", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
-	want := "diff -u --label 'l/file.json' --label 'r/file.json' '/tmp/diffhance/l/file.json' '/tmp/diffhance/r/file.json' | delta --paging=never"
+	want := "delta --paging=never '/tmp/diffhance/l/file.json' '/tmp/diffhance/r/file.json'"
 	if runtime.GOOS == "windows" {
-		want = `diff -u --label "l/file.json" --label "r/file.json" "/tmp/diffhance/l/file.json" "/tmp/diffhance/r/file.json" | delta --paging=never`
+		want = `delta --paging=never "/tmp/diffhance/l/file.json" "/tmp/diffhance/r/file.json"`
 	}
 	if got != want {
 		t.Fatalf("diffCommand() = %q, want %q", got, want)
@@ -856,6 +856,40 @@ func TestRunDeltaUsesCleanLabels(t *testing.T) {
 	}
 	if strings.Contains(stdout, tmp) || strings.Contains(stdout, "diffhance-") {
 		t.Fatalf("delta stdout = %q, want no temp path prefix", stdout)
+	}
+}
+
+func TestRunDeltaPreservesDiffExitOne(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell script as fake delta")
+	}
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	delta := filepath.Join(bin, "delta")
+	if err := os.WriteFile(delta, []byte("#!/bin/sh\ncat >/dev/null\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	left := filepath.Join(tmp, "old.txt")
+	right := filepath.Join(tmp, "new.txt")
+	if err := os.WriteFile(left, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, err := run(&options{noColor: true, diff: "delta --paging=never", args: []string{left, right}})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if code != 1 {
+		t.Fatalf("run() code = %d, want 1 from upstream diff", code)
 	}
 }
 

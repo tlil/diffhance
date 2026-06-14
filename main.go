@@ -621,6 +621,9 @@ func runDiff(o *options, left, right, leftLabel, rightLabel string) (int, error)
 	if !o.noColor && shouldColor() {
 		cmdline = injectColor(cmdline)
 	}
+	if shouldPipeLabeledDiff(cmdline) {
+		return runLabeledDiffThroughBackend(cmdline, left, right, leftLabel, rightLabel)
+	}
 	full := diffCommand(cmdline, left, right, leftLabel, rightLabel)
 	shellBin, flag := shell()
 	c := exec.Command(shellBin, flag, full)
@@ -639,10 +642,43 @@ func runDiff(o *options, left, right, leftLabel, rightLabel string) (int, error)
 	return 0, nil
 }
 
-func diffCommand(cmdline, left, right, leftLabel, rightLabel string) string {
-	if shouldPipeLabeledDiff(cmdline) {
-		return labeledDiffCommand(left, right, leftLabel, rightLabel) + " | " + cmdline
+func runLabeledDiffThroughBackend(cmdline, left, right, leftLabel, rightLabel string) (int, error) {
+	diffText, diffCode, err := runLabeledDiff(left, right, leftLabel, rightLabel)
+	if err != nil {
+		return diffCode, err
 	}
+
+	shellBin, flag := shell()
+	c := exec.Command(shellBin, flag, cmdline)
+	c.Stdin = strings.NewReader(diffText)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return 2, err
+	}
+	return diffCode, nil
+}
+
+func runLabeledDiff(left, right, leftLabel, rightLabel string) (string, int, error) {
+	shellBin, flag := shell()
+	c := exec.Command(shellBin, flag, labeledDiffCommand(left, right, leftLabel, rightLabel))
+	c.Stderr = os.Stderr
+	out, err := c.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return string(out), ee.ExitCode(), nil
+		}
+		return string(out), 2, err
+	}
+	return string(out), 0, nil
+}
+
+func diffCommand(cmdline, left, right, leftLabel, rightLabel string) string {
 	if shouldLabelBareDiff(cmdline) {
 		cmdline += " --label " + shellQuote(leftLabel) + " --label " + shellQuote(rightLabel)
 	}
