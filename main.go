@@ -408,13 +408,13 @@ func run(o *options) (int, error) {
 		return 0, nil
 	}
 
-	leftPath, rightPath, displayPath, err := resolveInputs(o)
+	leftPath, rightPath, leftDisplayPath, rightDisplayPath, err := resolveInputs(o)
 	if err != nil {
 		return 2, err
 	}
 
-	leftCmds := pickPre(o, displayPath, side("left"))
-	rightCmds := pickPre(o, displayPath, side("right"))
+	leftCmds := pickPre(o, leftDisplayPath, side("left"))
+	rightCmds := pickPre(o, rightDisplayPath, side("right"))
 
 	tmpDir, err := os.MkdirTemp("", "diffhance-")
 	if err != nil {
@@ -424,11 +424,11 @@ func run(o *options) (int, error) {
 		defer os.RemoveAll(tmpDir)
 	}
 
-	leftOut, err := stage(tmpDir, leftPrefix, displayPath, leftPath, leftCmds)
+	leftOut, err := stage(tmpDir, leftPrefix, leftDisplayPath, leftPath, leftCmds)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess left: %w", err)
 	}
-	rightOut, err := stage(tmpDir, rightPrefix, displayPath, rightPath, rightCmds)
+	rightOut, err := stage(tmpDir, rightPrefix, rightDisplayPath, rightPath, rightCmds)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess right: %w", err)
 	}
@@ -438,8 +438,8 @@ func run(o *options) (int, error) {
 		return 0, nil
 	}
 
-	leftLabel := filepath.Join(leftPrefix, stageDisplayPath(displayPath, leftPrefix))
-	rightLabel := filepath.Join(rightPrefix, stageDisplayPath(displayPath, rightPrefix))
+	leftLabel := filepath.Join(leftPrefix, stageDisplayPath(leftDisplayPath, leftPrefix))
+	rightLabel := filepath.Join(rightPrefix, stageDisplayPath(rightDisplayPath, rightPrefix))
 	code, err := runDiff(o, leftOut, rightOut, leftLabel, rightLabel)
 	// Git treats any non-zero exit from GIT_EXTERNAL_DIFF as fatal. The "files
 	// differ" signal (exit 1) is meaningless to git here — it already knew
@@ -464,21 +464,25 @@ func printConfigDirs(paths []string) {
 
 type side string
 
-// resolveInputs returns left, right, and a "display" path used for rule
-// matching and staged output paths. In --git mode the display path is the
-// repo-relative path that git provides as argv[0].
-func resolveInputs(o *options) (left, right, display string, err error) {
+// resolveInputs returns left, right, and per-side display paths used for rule
+// matching and staged output paths. In --git mode the display paths are the
+// repo-relative paths that git provides.
+func resolveInputs(o *options) (left, right, leftDisplay, rightDisplay string, err error) {
 	if o.git {
 		if len(o.args) < 7 {
-			return "", "", "", fmt.Errorf("--git expects at least 7 positional args, got %d", len(o.args))
+			return "", "", "", "", fmt.Errorf("--git expects at least 7 positional args, got %d", len(o.args))
 		}
 		// path old-file old-hex old-mode new-file new-hex new-mode [rename-to rename-mode]
-		return o.args[1], o.args[4], o.args[0], nil
+		rightDisplay = o.args[0]
+		if len(o.args) >= 9 {
+			rightDisplay = o.args[7]
+		}
+		return o.args[1], o.args[4], o.args[0], rightDisplay, nil
 	}
 	if len(o.args) != 2 {
-		return "", "", "", fmt.Errorf("expected exactly 2 positional args (LEFT RIGHT), got %d", len(o.args))
+		return "", "", "", "", fmt.Errorf("expected exactly 2 positional args (LEFT RIGHT), got %d", len(o.args))
 	}
-	return o.args[0], o.args[1], o.args[0], nil
+	return o.args[0], o.args[1], o.args[0], o.args[0], nil
 }
 
 func pickPre(o *options, displayPath string, s side) []string {

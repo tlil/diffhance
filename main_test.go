@@ -292,33 +292,45 @@ func TestPlatformRulesConfigPathsDarwinIncludesDotConfig(t *testing.T) {
 
 func TestResolveInputs(t *testing.T) {
 	tests := []struct {
-		name        string
-		o           options
-		wantLeft    string
-		wantRight   string
-		wantDisplay string
-		wantErr     string
+		name             string
+		o                options
+		wantLeft         string
+		wantRight        string
+		wantLeftDisplay  string
+		wantRightDisplay string
+		wantErr          string
 	}{
 		{
-			name:        "same basename keeps left path for display",
-			o:           options{args: []string{"old/config.json", "new/config.json"}},
-			wantLeft:    "old/config.json",
-			wantRight:   "new/config.json",
-			wantDisplay: "old/config.json",
+			name:             "same basename keeps left path for display",
+			o:                options{args: []string{"old/config.json", "new/config.json"}},
+			wantLeft:         "old/config.json",
+			wantRight:        "new/config.json",
+			wantLeftDisplay:  "old/config.json",
+			wantRightDisplay: "old/config.json",
 		},
 		{
-			name:        "different basenames use left path for display",
-			o:           options{args: []string{"old/config.json", "new/settings.json"}},
-			wantLeft:    "old/config.json",
-			wantRight:   "new/settings.json",
-			wantDisplay: "old/config.json",
+			name:             "different basenames use left path for display",
+			o:                options{args: []string{"old/config.json", "new/settings.json"}},
+			wantLeft:         "old/config.json",
+			wantRight:        "new/settings.json",
+			wantLeftDisplay:  "old/config.json",
+			wantRightDisplay: "old/config.json",
 		},
 		{
-			name:        "git args use provided path and file slots",
-			o:           options{git: true, args: []string{"src/app.json", "old-file", "oldhex", "100644", "new-file", "newhex", "100644", "renamed", "100644"}},
-			wantLeft:    "old-file",
-			wantRight:   "new-file",
-			wantDisplay: "src/app.json",
+			name:             "git args use provided path and file slots",
+			o:                options{git: true, args: []string{"src/app.json", "old-file", "oldhex", "100644", "new-file", "newhex", "100644"}},
+			wantLeft:         "old-file",
+			wantRight:        "new-file",
+			wantLeftDisplay:  "src/app.json",
+			wantRightDisplay: "src/app.json",
+		},
+		{
+			name:             "git rename uses rename target for right display",
+			o:                options{git: true, args: []string{"src/app.txt", "old-file", "oldhex", "100644", "new-file", "newhex", "100644", "src/app.json", "100644"}},
+			wantLeft:         "old-file",
+			wantRight:        "new-file",
+			wantLeftDisplay:  "src/app.txt",
+			wantRightDisplay: "src/app.json",
 		},
 		{
 			name:    "non-git requires exactly two args",
@@ -334,7 +346,7 @@ func TestResolveInputs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			left, right, display, err := resolveInputs(&tt.o)
+			left, right, leftDisplay, rightDisplay, err := resolveInputs(&tt.o)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("resolveInputs() error = %v, want %q", err, tt.wantErr)
@@ -344,8 +356,8 @@ func TestResolveInputs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveInputs() error = %v", err)
 			}
-			if left != tt.wantLeft || right != tt.wantRight || display != tt.wantDisplay {
-				t.Fatalf("resolveInputs() = (%q, %q, %q), want (%q, %q, %q)", left, right, display, tt.wantLeft, tt.wantRight, tt.wantDisplay)
+			if left != tt.wantLeft || right != tt.wantRight || leftDisplay != tt.wantLeftDisplay || rightDisplay != tt.wantRightDisplay {
+				t.Fatalf("resolveInputs() = (%q, %q, %q, %q), want (%q, %q, %q, %q)", left, right, leftDisplay, rightDisplay, tt.wantLeft, tt.wantRight, tt.wantLeftDisplay, tt.wantRightDisplay)
 			}
 		})
 	}
@@ -765,6 +777,51 @@ func TestRunPrintGitModePreservesDisplayPath(t *testing.T) {
 	if wantSuffix := filepath.Join(rightPrefix, "Objects", "config.json"); !strings.HasSuffix(parts[1], wantSuffix) {
 		t.Fatalf("right staged path = %q, want suffix %q", parts[1], wantSuffix)
 	}
+}
+
+func TestRunPrintGitRenameUsesRightDisplayPathForRules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("preprocessing command is POSIX-specific")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "old-file")
+	right := filepath.Join(tmp, "new-file")
+	if err := os.WriteFile(left, []byte("abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("def\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code, err := run(&options{
+			git:        true,
+			printPaths: true,
+			rules:      []string{"*.json:tr a-z A-Z"},
+			diff:       "diff -u",
+			args:       []string{filepath.Join("Objects", "config.txt"), left, "oldhex", "100644", right, "newhex", "100644", filepath.Join("Objects", "config.json"), "100644"},
+		})
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("run() code = %d, want 0", code)
+		}
+	})
+
+	parts := strings.Split(strings.TrimSpace(stdout), "\t")
+	if len(parts) != 2 {
+		t.Fatalf("run --print stdout = %q, want two tab-separated paths", stdout)
+	}
+	if wantSuffix := filepath.Join(leftPrefix, "Objects", "config.txt"); !strings.HasSuffix(parts[0], wantSuffix) {
+		t.Fatalf("left staged path = %q, want suffix %q", parts[0], wantSuffix)
+	}
+	if wantSuffix := filepath.Join(rightPrefix, "Objects", "config.json"); !strings.HasSuffix(parts[1], wantSuffix) {
+		t.Fatalf("right staged path = %q, want suffix %q", parts[1], wantSuffix)
+	}
+	assertFileContent(t, parts[0], "abc\n")
+	assertFileContent(t, parts[1], "DEF\n")
 }
 
 func TestRunGitModeSwallowsDiffExitOne(t *testing.T) {
