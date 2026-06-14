@@ -67,6 +67,11 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
+      - name: Set release name
+        run: |
+          release_name="$(date -u +%Y-%m)-$(git rev-parse --short=7 HEAD)"
+          printf 'RELEASE_NAME=%s\n' "$release_name" >> "$GITHUB_ENV"
+
       - name: Build binary
         env:
           CGO_ENABLED: 0
@@ -74,7 +79,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p "dist/${{ matrix.target }}"
-          go build -trimpath -ldflags="-s -w" -o "dist/${{ matrix.target }}/${{ matrix.binary }}" .
+          go build -trimpath -ldflags="-s -w -X main.releaseName=$RELEASE_NAME" -o "dist/${{ matrix.target }}/${{ matrix.binary }}" .
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
@@ -117,9 +122,9 @@ jobs:
           tag="$(date -u +%Y-%m)-$short_sha"
           {
             printf 'Automated release for commit `%s`.\n\n' "$GITHUB_SHA"
-            printf 'Commit details:\n\n'
+            printf '## Commit details:\n\n'
             printf '%s\n\n' "$COMMIT_MESSAGE"
-            printf 'Build artifacts:\n'
+            printf '## Build artifacts:\n'
             for asset in release-assets/*; do
               asset_name="$(basename "$asset")"
               printf -- '- [`%s`](https://github.com/%s/releases/download/%s/%s)\n' "$asset_name" "$GITHUB_REPOSITORY" "$tag" "$asset_name"

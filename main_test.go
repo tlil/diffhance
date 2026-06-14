@@ -51,8 +51,8 @@ func TestParseArgsValidForms(t *testing.T) {
 		},
 		{
 			name: "boolean flags",
-			argv: []string{"--git", "--print", "--print-rules", "--print-config-dirs", "--no-color", "path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"},
-			want: options{diff: "diff -u", git: true, printPaths: true, printRules: true, printConfigDirs: true, noColor: true, args: []string{"path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"}},
+			argv: []string{"--git", "--print", "--print-rules", "--print-config-dirs", "--version", "--no-color", "path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"},
+			want: options{diff: "diff -u", git: true, printPaths: true, printRules: true, printConfigDirs: true, version: true, noColor: true, args: []string{"path", "old", "oldhex", "oldmode", "new", "newhex", "newmode"}},
 		},
 		{
 			name: "double dash stops flag parsing",
@@ -260,6 +260,27 @@ func TestRunPrintConfigDirs(t *testing.T) {
 		}
 	})
 	if want := strings.Join(paths, "\n") + "\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	oldReleaseName := releaseName
+	releaseName = "2026-06-8363a85"
+	t.Cleanup(func() { releaseName = oldReleaseName })
+
+	withDefaultRulesConfigPaths(t, []string{filepath.Join(t.TempDir(), "missing", "rules")})
+	o, err := parseArgs([]string{"--version"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	got := captureStdout(t, func() {
+		code, err := run(o)
+		if err != nil || code != 0 {
+			t.Fatalf("run() code = %d, err = %v, want 0, nil", code, err)
+		}
+	})
+	if want := "2026-06-8363a85\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }

@@ -50,6 +50,7 @@ FLAGS
       --print-rules        Print resolved rules, one per line, then exit.
       --print-config-dirs  Print default config file locations checked, one per line, then exit.
       --no-color           Do not auto-add color flags to the default diff backend.
+      --version            Print the release name and exit.
   -h, --help               Show this help and exit.
 
 EXAMPLES
@@ -90,6 +91,8 @@ type stringSlice []string
 func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
+var releaseName = "dev"
+
 const (
 	leftPrefix  = "l"
 	rightPrefix = "r"
@@ -103,6 +106,7 @@ type options struct {
 	printPaths             bool
 	printRules             bool
 	printConfigDirs        bool
+	version                bool
 	noColor                bool
 	args                   []string
 }
@@ -242,6 +246,8 @@ func parseArgs(argv []string) (*options, error) {
 			o.printRules = true
 		case a == "--print-config-dirs":
 			o.printConfigDirs = true
+		case a == "--version":
+			o.version = true
 		case a == "--no-color":
 			o.noColor = true
 		case a == "-p", a == "--pre":
@@ -322,7 +328,7 @@ func parseArgs(argv []string) (*options, error) {
 	if o.diff == "" {
 		o.diff = "diff -u"
 	}
-	if o.printConfigDirs {
+	if o.printConfigDirs || o.version {
 		return o, nil
 	}
 	rules, err := readExistingRulesFiles(defaultRulesConfigPaths())
@@ -398,6 +404,11 @@ func readRulesFile(path string) ([]string, error) {
 }
 
 func run(o *options) (int, error) {
+	if o.version {
+		fmt.Println(releaseName)
+		return 0, nil
+	}
+
 	if o.printConfigDirs {
 		printConfigDirs(defaultRulesConfigPaths())
 		return 0, nil
