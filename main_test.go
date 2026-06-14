@@ -426,7 +426,8 @@ func TestPickPreRulesAndPrecedence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pickPre(&tt.o, tt.displayPath, tt.side); got != tt.want {
+			got := strings.Join(pickPre(&tt.o, tt.displayPath, tt.side), " | ")
+			if got != tt.want {
 				t.Fatalf("pickPre() = %q, want %q", got, tt.want)
 			}
 		})
@@ -440,7 +441,7 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, "")
+	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, nil)
 	if err != nil {
 		t.Fatalf("stage(copy) error = %v", err)
 	}
@@ -452,7 +453,7 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell preprocessing command is POSIX-specific")
 	}
-	out, err = stage(tmp, rightPrefix, "display.txt", src, "tr a-z A-Z")
+	out, err = stage(tmp, rightPrefix, "display.txt", src, []string{"tr a-z A-Z"})
 	if err != nil {
 		t.Fatalf("stage(preprocess) error = %v", err)
 	}
@@ -466,7 +467,7 @@ func TestStageUsesSideNameForEmptyDisplayBasename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, "")
+	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, nil)
 	if err != nil {
 		t.Fatalf("stage() error = %v", err)
 	}
@@ -504,7 +505,7 @@ func TestStageDisplayPath(t *testing.T) {
 
 func TestStageErrors(t *testing.T) {
 	tmp := t.TempDir()
-	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), "")
+	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), nil)
 	if err == nil {
 		t.Fatal("stage() error = nil, want missing input error")
 	}
@@ -516,7 +517,7 @@ func TestStageErrors(t *testing.T) {
 	if err := os.WriteFile(src, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = stage(tmp, rightPrefix, "display.txt", src, "exit 7")
+	_, err = stage(tmp, rightPrefix, "display.txt", src, []string{"exit 7"})
 	if err == nil || !strings.Contains(err.Error(), `running "exit 7"`) {
 		t.Fatalf("stage() error = %v, want command failure", err)
 	}
@@ -691,6 +692,41 @@ func TestRunPrintChainsMatchingConfigRules(t *testing.T) {
 	}
 	assertFileContent(t, parts[0], "AYC\n")
 	assertFileContent(t, parts[1], "DEF\n")
+}
+
+func TestRunPrintChainsStopOnRuleFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("preprocessing command is POSIX-specific")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "left", "config.json")
+	right := filepath.Join(tmp, "right", "config.json")
+	if err := os.MkdirAll(filepath.Dir(left), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(right), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(left, []byte("abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("def\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, err := run(&options{
+		printPaths: true,
+		rules:      []string{"*.json:exit 7", "config.*:cat"},
+		diff:       "diff -u",
+		args:       []string{left, right},
+	})
+	if err == nil || !strings.Contains(err.Error(), `running "exit 7"`) {
+		t.Fatalf("run() error = %v, want first rule failure", err)
+	}
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
+	}
 }
 
 func TestRunPrintGitModePreservesDisplayPath(t *testing.T) {
