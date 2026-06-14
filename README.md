@@ -86,7 +86,7 @@ diffhance git --staged -- path/to/file.json
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `-p, --pre CMD`                     | Shell pipeline applied to both sides (file streamed on stdin)                                                            |
 | `--pre-left CMD`, `--pre-right CMD` | Per-side overrides                                                                                                       |
-| `-r, --rule GLOB:CMD`               | Apply `CMD` when the file's basename matches `GLOB` (repeatable, first match wins). Ignored if `--pre`/`--pre-*` is set. |
+| `-r, --rule GLOB:CMD`               | Apply `CMD` when the file's basename matches `GLOB` (repeatable; matching rules are chained in order). Ignored if `--pre`/`--pre-*` is set. |
 | `-c, --config PATH`                 | Read rules from `PATH`, one `GLOB:CMD` per line. Blank lines and lines starting with `#` are ignored.                    |
 | `-d, --diff CMD`                    | Diff backend (default `diff -u`). The two preprocessed paths are appended as the last two positional args.               |
 | `--git`                             | Treat positional args as git's external-diff invocation                                                                  |
@@ -103,6 +103,11 @@ Rules config files use the same `GLOB:CMD` format as `--rule`, one rule per
 line. Existing default configs are loaded automatically from `diffhance/rules`
 under the platform config directories, then appended after any explicit
 `--rule` or `--config` rules.
+
+When multiple rules match the file basename, diffhance applies them in resolved
+rule order as a shell pipeline. For example, `-r '*.json:jq -S .'
+-r 'config.*:grep -v secret'` runs `jq -S . | grep -v secret` for
+`config.json`.
 
 Default locations:
 

@@ -374,11 +374,18 @@ func TestPickPreRulesAndPrecedence(t *testing.T) {
 			want:        "",
 		},
 		{
-			name:        "first matching rule wins",
+			name:        "matching rules chain in order",
 			o:           options{rules: []string{"*.json:first", "config.*:second"}},
 			displayPath: "config.json",
 			side:        "right",
-			want:        "first",
+			want:        "first | second",
+		},
+		{
+			name:        "nonmatching rule is skipped while later match applies",
+			o:           options{rules: []string{"*.txt:first", "config.*:second"}},
+			displayPath: "config.json",
+			side:        "right",
+			want:        "second",
 		},
 		{
 			name:        "invalid and malformed rules are ignored",
@@ -639,6 +646,50 @@ func TestRunPrintAppliesRulesByFileBasename(t *testing.T) {
 		t.Fatalf("run --print stdout = %q, want two tab-separated paths", stdout)
 	}
 	assertFileContent(t, parts[0], "ABC\n")
+	assertFileContent(t, parts[1], "DEF\n")
+}
+
+func TestRunPrintChainsMatchingConfigRules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("preprocessing command is POSIX-specific")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "left", "config.json")
+	right := filepath.Join(tmp, "right", "config.json")
+	if err := os.MkdirAll(filepath.Dir(left), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(right), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(left, []byte("abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("def\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code, err := run(&options{
+			printPaths: true,
+			rules:      []string{"*.json:tr a-z A-Z", "config.*:tr B Y"},
+			diff:       "diff -u",
+			args:       []string{left, right},
+		})
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("run() code = %d, want 0", code)
+		}
+	})
+
+	parts := strings.Split(strings.TrimSpace(stdout), "\t")
+	if len(parts) != 2 {
+		t.Fatalf("run --print stdout = %q, want two tab-separated paths", stdout)
+	}
+	assertFileContent(t, parts[0], "AYC\n")
 	assertFileContent(t, parts[1], "DEF\n")
 }
 

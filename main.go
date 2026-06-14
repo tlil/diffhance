@@ -36,7 +36,7 @@ FLAGS
       --pre-left CMD       Shell pipeline applied to LEFT side only
       --pre-right CMD      Shell pipeline applied to RIGHT side only
   -r, --rule GLOB:CMD      Apply CMD when the file's basename matches GLOB (repeatable).
-                           First matching rule wins. Ignored when --pre/--pre-* is set.
+                           Matching rules are chained in order. Ignored when --pre/--pre-* is set.
   -c, --config PATH        Read rules from PATH, one GLOB:CMD per line. Blank lines and
                            lines starting with # are ignored. May be repeated.
                            Existing default configs are also loaded from the platform's
@@ -496,6 +496,7 @@ func pickPre(o *options, displayPath string, s side) string {
 		return o.pre
 	}
 	base := filepath.Base(displayPath)
+	var chain []string
 	for _, r := range o.rules {
 		glob, cmd, ok := strings.Cut(r, ":")
 		if !ok {
@@ -503,8 +504,11 @@ func pickPre(o *options, displayPath string, s side) string {
 		}
 		match, err := filepath.Match(glob, base)
 		if err == nil && match {
-			return cmd
+			chain = append(chain, cmd)
 		}
+	}
+	if len(chain) > 0 {
+		return strings.Join(chain, " | ")
 	}
 	return ""
 }
