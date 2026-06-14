@@ -61,8 +61,9 @@ GIT_EXTERNAL_DIFF="diffhance --git --rule '*.json:jq -S .'" git diff HEAD~1 HEAD
 GIT_EXTERNAL_DIFF="diffhance --git -r '*.json:jq -S .'" git diff HEAD~1 HEAD | delta
 ```
 
-In `--git` mode diffhance always exits 0 (even when the files differ),
-because git treats any non-zero exit from an external diff as fatal.
+In `--git` mode diffhance exits 0 when the files differ, because git treats
+any non-zero exit from an external diff as fatal. Real preprocessing or diff
+backend errors still return non-zero.
 
 ### `git` shorthand
 
