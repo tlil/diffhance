@@ -567,7 +567,7 @@ func TestShouldColorHonorsNoColor(t *testing.T) {
 
 func TestShellQuote(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		if got := shellQuote(`a"b`); got != `"a""b"` {
+		if got := shellQuote(`a"b%PATH%`); got != `"a""b%%PATH%%"` {
 			t.Fatalf("shellQuote() = %q", got)
 		}
 		return
@@ -575,6 +575,14 @@ func TestShellQuote(t *testing.T) {
 
 	if got := shellQuote("a'b c"); got != `'a'\''b c'` {
 		t.Fatalf("shellQuote() = %q, want shell-safe single-quote escaping", got)
+	}
+}
+
+func TestWindowsCmdQuoteEscapesPercentExpansion(t *testing.T) {
+	got := windowsCmdQuote(`a"b%PATH%`)
+	want := `"a""b%%PATH%%"`
+	if got != want {
+		t.Fatalf("windowsCmdQuote() = %q, want %q", got, want)
 	}
 }
 

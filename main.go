@@ -793,9 +793,15 @@ func injectColor(cmdline string) string {
 
 func shellQuote(s string) string {
 	if runtime.GOOS == "windows" {
-		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+		return windowsCmdQuote(s)
 	}
 	return posixQuote(s)
+}
+
+func windowsCmdQuote(s string) string {
+	s = strings.ReplaceAll(s, `%`, `%%`)
+	s = strings.ReplaceAll(s, `"`, `""`)
+	return `"` + s + `"`
 }
 
 func posixQuote(s string) string {
