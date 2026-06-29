@@ -459,7 +459,8 @@ func TestPickPreRulesAndPrecedence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := strings.Join(pickPre(&tt.o, tt.displayPath, tt.side), " | ")
+			cmds, _ := pickPre(&tt.o, tt.displayPath, tt.side)
+			got := strings.Join(cmds, " | ")
 			if got != tt.want {
 				t.Fatalf("pickPre() = %q, want %q", got, tt.want)
 			}
@@ -474,7 +475,7 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, nil)
+	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, nil, false)
 	if err != nil {
 		t.Fatalf("stage(copy) error = %v", err)
 	}
@@ -486,7 +487,7 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell preprocessing command is POSIX-specific")
 	}
-	out, err = stage(tmp, rightPrefix, "display.txt", src, []string{"tr a-z A-Z"})
+	out, err = stage(tmp, rightPrefix, "display.txt", src, []string{"tr a-z A-Z"}, false)
 	if err != nil {
 		t.Fatalf("stage(preprocess) error = %v", err)
 	}
@@ -500,7 +501,7 @@ func TestStageUsesSideNameForEmptyDisplayBasename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, nil)
+	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, nil, false)
 	if err != nil {
 		t.Fatalf("stage() error = %v", err)
 	}
@@ -538,7 +539,7 @@ func TestStageDisplayPath(t *testing.T) {
 
 func TestStageErrors(t *testing.T) {
 	tmp := t.TempDir()
-	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), nil)
+	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), nil, false)
 	if err == nil {
 		t.Fatal("stage() error = nil, want missing input error")
 	}
@@ -550,7 +551,7 @@ func TestStageErrors(t *testing.T) {
 	if err := os.WriteFile(src, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = stage(tmp, rightPrefix, "display.txt", src, []string{"exit 7"})
+	_, err = stage(tmp, rightPrefix, "display.txt", src, []string{"exit 7"}, false)
 	if err == nil || !strings.Contains(err.Error(), `running "exit 7"`) {
 		t.Fatalf("stage() error = %v, want command failure", err)
 	}
@@ -735,7 +736,7 @@ func TestRunPrintChainsMatchingConfigRules(t *testing.T) {
 	assertFileContent(t, parts[1], "DEF\n")
 }
 
-func TestRunPrintChainsStopOnRuleFailure(t *testing.T) {
+func TestRunPrintChainsSkipRuleFailures(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("preprocessing command is POSIX-specific")
 	}
@@ -756,18 +757,33 @@ func TestRunPrintChainsStopOnRuleFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, err := run(&options{
-		printPaths: true,
-		rules:      []string{"*.json:exit 7", "config.*:cat"},
-		diff:       "diff -u",
-		args:       []string{left, right},
+	var stdout string
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			code, err := run(&options{
+				printPaths: true,
+				rules:      []string{"*.json:tr a-z A-Z", "config.*:echo noisy >&2; exit 7", "config.*:tr B Y"},
+				diff:       "diff -u",
+				args:       []string{left, right},
+			})
+			if err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			if code != 0 {
+				t.Fatalf("run() code = %d, want 0", code)
+			}
+		})
 	})
-	if err == nil || !strings.Contains(err.Error(), `running "exit 7"`) {
-		t.Fatalf("run() error = %v, want first rule failure", err)
+	if stderr != "" {
+		t.Fatalf("run() stderr = %q, want silent failed rule", stderr)
 	}
-	if code != 2 {
-		t.Fatalf("run() code = %d, want 2", code)
+
+	parts := strings.Split(strings.TrimSpace(stdout), "\t")
+	if len(parts) != 2 {
+		t.Fatalf("run --print stdout = %q, want two tab-separated paths", stdout)
 	}
+	assertFileContent(t, parts[0], "AYC\n")
+	assertFileContent(t, parts[1], "DEF\n")
 }
 
 func TestRunPrintGitModePreservesDisplayPath(t *testing.T) {
@@ -1231,6 +1247,31 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	os.Stdout = w
 	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
 
 	fn()
 

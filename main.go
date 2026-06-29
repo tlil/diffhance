@@ -424,8 +424,8 @@ func run(o *options) (int, error) {
 		return 2, err
 	}
 
-	leftCmds := pickPre(o, leftDisplayPath, side("left"))
-	rightCmds := pickPre(o, rightDisplayPath, side("right"))
+	leftCmds, leftIgnorePreprocessErrors := pickPre(o, leftDisplayPath, side("left"))
+	rightCmds, rightIgnorePreprocessErrors := pickPre(o, rightDisplayPath, side("right"))
 
 	tmpDir, err := os.MkdirTemp("", "diffhance-")
 	if err != nil {
@@ -435,11 +435,11 @@ func run(o *options) (int, error) {
 		defer os.RemoveAll(tmpDir)
 	}
 
-	leftOut, err := stage(tmpDir, leftPrefix, leftDisplayPath, leftPath, leftCmds)
+	leftOut, err := stage(tmpDir, leftPrefix, leftDisplayPath, leftPath, leftCmds, leftIgnorePreprocessErrors)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess left: %w", err)
 	}
-	rightOut, err := stage(tmpDir, rightPrefix, rightDisplayPath, rightPath, rightCmds)
+	rightOut, err := stage(tmpDir, rightPrefix, rightDisplayPath, rightPath, rightCmds, rightIgnorePreprocessErrors)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess right: %w", err)
 	}
@@ -496,19 +496,19 @@ func resolveInputs(o *options) (left, right, leftDisplay, rightDisplay string, e
 	return o.args[0], o.args[1], o.args[0], o.args[0], nil
 }
 
-func pickPre(o *options, displayPath string, s side) []string {
+func pickPre(o *options, displayPath string, s side) ([]string, bool) {
 	switch s {
 	case "left":
 		if o.preLeft != "" {
-			return []string{o.preLeft}
+			return []string{o.preLeft}, false
 		}
 	case "right":
 		if o.preRight != "" {
-			return []string{o.preRight}
+			return []string{o.preRight}, false
 		}
 	}
 	if o.pre != "" {
-		return []string{o.pre}
+		return []string{o.pre}, false
 	}
 	base := filepath.Base(displayPath)
 	var chain []string
@@ -522,13 +522,13 @@ func pickPre(o *options, displayPath string, s side) []string {
 			chain = append(chain, cmd)
 		}
 	}
-	return chain
+	return chain, true
 }
 
 // stage either copies src into tmpDir or streams it through cmd, returning
 // the path of the staged file. The staged path preserves the original display
 // path so diff output stays meaningful.
-func stage(tmpDir, side, displayPath, src string, cmds []string) (string, error) {
+func stage(tmpDir, side, displayPath, src string, cmds []string, ignorePreprocessErrors bool) (string, error) {
 	sub := filepath.Join(tmpDir, side)
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		return "", err
@@ -539,13 +539,13 @@ func stage(tmpDir, side, displayPath, src string, cmds []string) (string, error)
 		return "", err
 	}
 
-	in, err := openInput(src)
-	if err != nil {
-		return "", err
-	}
-	defer in.Close()
-
 	if len(cmds) == 0 {
+		in, err := openInput(src)
+		if err != nil {
+			return "", err
+		}
+		defer in.Close()
+
 		f, err := os.Create(out)
 		if err != nil {
 			return "", err
@@ -556,6 +556,15 @@ func stage(tmpDir, side, displayPath, src string, cmds []string) (string, error)
 		}
 		return out, nil
 	}
+	if ignorePreprocessErrors {
+		return stageIgnoringPreprocessErrors(tmpDir, out, src, cmds)
+	}
+
+	in, err := openInput(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
 
 	var tempPaths []string
 	defer func() {
@@ -601,12 +610,72 @@ func stage(tmpDir, side, displayPath, src string, cmds []string) (string, error)
 	return out, nil
 }
 
+func stageIgnoringPreprocessErrors(tmpDir, out, src string, cmds []string) (string, error) {
+	currentPath := src
+	var tempPaths []string
+	defer func() {
+		for _, path := range tempPaths {
+			_ = os.Remove(path)
+		}
+	}()
+
+	for _, cmd := range cmds {
+		in, err := openInput(currentPath)
+		if err != nil {
+			return "", err
+		}
+		f, err := os.CreateTemp(tmpDir, "pre-")
+		if err != nil {
+			_ = in.Close()
+			return "", err
+		}
+		tempPath := f.Name()
+
+		runErr := runPreprocessQuiet(cmd, in, f)
+		closeErr := f.Close()
+		_ = in.Close()
+		if runErr != nil {
+			_ = os.Remove(tempPath)
+			continue
+		}
+		if closeErr != nil {
+			_ = os.Remove(tempPath)
+			return "", closeErr
+		}
+		currentPath = tempPath
+		tempPaths = append(tempPaths, tempPath)
+	}
+
+	in, err := openInput(currentPath)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	f, err := os.Create(out)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, in); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
 func runPreprocess(cmd string, in io.Reader, out io.Writer) error {
+	return runPreprocessWithStderr(cmd, in, out, os.Stderr)
+}
+
+func runPreprocessQuiet(cmd string, in io.Reader, out io.Writer) error {
+	return runPreprocessWithStderr(cmd, in, out, io.Discard)
+}
+
+func runPreprocessWithStderr(cmd string, in io.Reader, out io.Writer, stderr io.Writer) error {
 	shell, flag := shell()
 	c := exec.Command(shell, flag, cmd)
 	c.Stdin = in
 	c.Stdout = out
-	c.Stderr = os.Stderr
+	c.Stderr = stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("running %q: %w", cmd, err)
 	}
