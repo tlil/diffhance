@@ -36,13 +36,13 @@ func TestParseArgsValidForms(t *testing.T) {
 		},
 		{
 			name: "long flags with separate values",
-			argv: []string{"--pre", "jq .", "--pre-left", "left-cmd", "--pre-right", "right-cmd", "--diff", "delta", "--rule", "*.json:jq -S .", "left", "right"},
-			want: options{pre: "jq .", preLeft: "left-cmd", preRight: "right-cmd", diff: "delta", rules: []string{"*.json:jq -S ."}, args: []string{"left", "right"}},
+			argv: []string{"--pre", "jq .", "--pre-left", "left-cmd", "--pre-right", "right-cmd", "--diff", "delta", "--rule", "*.json:jq -S .", "--pre-errors", "stderr", "left", "right"},
+			want: options{pre: "jq .", preLeft: "left-cmd", preRight: "right-cmd", diff: "delta", rules: []string{"*.json:jq -S ."}, preErrors: "stderr", args: []string{"left", "right"}},
 		},
 		{
 			name: "long flags with equals values",
-			argv: []string{"--pre=jq .", "--pre-left=left-cmd", "--pre-right=right-cmd", "--diff=delta", "--rule=*.xml:xmllint --format -", "left", "right"},
-			want: options{pre: "jq .", preLeft: "left-cmd", preRight: "right-cmd", diff: "delta", rules: []string{"*.xml:xmllint --format -"}, args: []string{"left", "right"}},
+			argv: []string{"--pre=jq .", "--pre-left=left-cmd", "--pre-right=right-cmd", "--diff=delta", "--rule=*.xml:xmllint --format -", "--pre-errors=pre.err", "left", "right"},
+			want: options{pre: "jq .", preLeft: "left-cmd", preRight: "right-cmd", diff: "delta", rules: []string{"*.xml:xmllint --format -"}, preErrors: "pre.err", args: []string{"left", "right"}},
 		},
 		{
 			name: "short flags with attached values",
@@ -127,6 +127,7 @@ func TestParseArgsErrors(t *testing.T) {
 		{name: "diff missing value", argv: []string{"--diff"}, wantErr: "flag --diff requires a value"},
 		{name: "rule missing value", argv: []string{"--rule"}, wantErr: "flag --rule requires a value"},
 		{name: "config missing value", argv: []string{"--config"}, wantErr: "flag --config requires a value"},
+		{name: "pre-errors missing value", argv: []string{"--pre-errors"}, wantErr: "flag --pre-errors requires a value"},
 		{name: "unknown flag", argv: []string{"--wat"}, wantErr: "unknown flag \"--wat\""},
 	}
 
@@ -475,7 +476,7 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, nil, false)
+	out, err := stage(tmp, leftPrefix, "nested/display.txt", src, nil, false, nil)
 	if err != nil {
 		t.Fatalf("stage(copy) error = %v", err)
 	}
@@ -487,7 +488,7 @@ func TestStageCopiesOrPreprocessesInput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell preprocessing command is POSIX-specific")
 	}
-	out, err = stage(tmp, rightPrefix, "display.txt", src, []string{"tr a-z A-Z"}, false)
+	out, err = stage(tmp, rightPrefix, "display.txt", src, []string{"tr a-z A-Z"}, false, nil)
 	if err != nil {
 		t.Fatalf("stage(preprocess) error = %v", err)
 	}
@@ -501,7 +502,7 @@ func TestStageUsesSideNameForEmptyDisplayBasename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, nil, false)
+	out, err := stage(tmp, leftPrefix, string(filepath.Separator), src, nil, false, nil)
 	if err != nil {
 		t.Fatalf("stage() error = %v", err)
 	}
@@ -539,7 +540,7 @@ func TestStageDisplayPath(t *testing.T) {
 
 func TestStageErrors(t *testing.T) {
 	tmp := t.TempDir()
-	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), nil, false)
+	_, err := stage(tmp, leftPrefix, "display.txt", filepath.Join(tmp, "missing.txt"), nil, false, nil)
 	if err == nil {
 		t.Fatal("stage() error = nil, want missing input error")
 	}
@@ -551,7 +552,7 @@ func TestStageErrors(t *testing.T) {
 	if err := os.WriteFile(src, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = stage(tmp, rightPrefix, "display.txt", src, []string{"exit 7"}, false)
+	_, err = stage(tmp, rightPrefix, "display.txt", src, []string{"exit 7"}, false, nil)
 	if err == nil || !strings.Contains(err.Error(), `running "exit 7"`) {
 		t.Fatalf("stage() error = %v, want command failure", err)
 	}
@@ -784,6 +785,117 @@ func TestRunPrintChainsSkipRuleFailures(t *testing.T) {
 	}
 	assertFileContent(t, parts[0], "AYC\n")
 	assertFileContent(t, parts[1], "DEF\n")
+}
+
+func TestRunPrintReportsSkippedRuleFailuresToStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("preprocessing command is POSIX-specific")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "left", "config.json")
+	right := filepath.Join(tmp, "right", "config.json")
+	if err := os.MkdirAll(filepath.Dir(left), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(right), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(left, []byte("abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("def\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := captureStderr(t, func() {
+		_ = captureStdout(t, func() {
+			code, err := run(&options{
+				printPaths: true,
+				rules:      []string{"*.json:tr a-z A-Z", "config.*:echo noisy >&2; exit 7", "config.*:tr B Y"},
+				preErrors:  "stderr",
+				diff:       "diff -u",
+				args:       []string{left, right},
+			})
+			if err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			if code != 0 {
+				t.Fatalf("run() code = %d, want 0", code)
+			}
+		})
+	})
+
+	for _, want := range []string{
+		"diffhance: ignored rule preprocessor failure",
+		"command: \"echo noisy >&2; exit 7\"",
+		"exit code: 7",
+		"stderr:\nnoisy\n",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr, want)
+		}
+	}
+}
+
+func TestRunPrintReportsSkippedRuleFailuresToFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("preprocessing command is POSIX-specific")
+	}
+
+	tmp := t.TempDir()
+	left := filepath.Join(tmp, "left", "config.json")
+	right := filepath.Join(tmp, "right", "config.json")
+	logPath := filepath.Join(tmp, "pre-errors.log")
+	if err := os.MkdirAll(filepath.Dir(left), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(right), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(left, []byte("abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("def\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := captureStderr(t, func() {
+		_ = captureStdout(t, func() {
+			code, err := run(&options{
+				printPaths: true,
+				rules:      []string{"*.json:tr a-z A-Z", "config.*:echo file-noisy >&2; exit 8", "config.*:tr B Y"},
+				preErrors:  logPath,
+				diff:       "diff -u",
+				args:       []string{left, right},
+			})
+			if err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			if code != 0 {
+				t.Fatalf("run() code = %d, want 0", code)
+			}
+		})
+	})
+	if stderr != "" {
+		t.Fatalf("run() stderr = %q, want file logging only", stderr)
+	}
+
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(b)
+	for _, want := range []string{
+		"diffhance: ignored rule preprocessor failure",
+		"command: \"echo file-noisy >&2; exit 8\"",
+		"exit code: 8",
+		"stderr:\nfile-noisy\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("log = %q, want substring %q", log, want)
+		}
+	}
 }
 
 func TestRunPrintGitModePreservesDisplayPath(t *testing.T) {

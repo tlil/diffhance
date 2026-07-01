@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,8 @@ FLAGS
       --pre-right CMD      Shell pipeline applied to RIGHT side only
   -r, --rule GLOB:CMD      Apply CMD when the file's basename matches GLOB (repeatable).
                            Matching rules are chained in order. Ignored when --pre/--pre-* is set.
+      --pre-errors TARGET  Report ignored rule preprocessor failures to "stderr" or PATH.
+                           Default: silent.
   -c, --config PATH        Read rules from PATH, one GLOB:CMD per line. Blank lines and
                            lines starting with # are ignored. May be repeated.
                            Existing default configs are also loaded from the platform's
@@ -108,6 +111,7 @@ type options struct {
 	printConfigDirs        bool
 	version                bool
 	noColor                bool
+	preErrors              string
 	args                   []string
 }
 
@@ -151,6 +155,7 @@ var valueFlags = map[string]bool{
 	"-d": true, "--diff": true,
 	"-r": true, "--rule": true,
 	"-c": true, "--config": true,
+	"--pre-errors": true,
 }
 
 // splitGitShorthand detects the "diffhance [flags] git ..." shorthand, where
@@ -250,6 +255,14 @@ func parseArgs(argv []string) (*options, error) {
 			o.version = true
 		case a == "--no-color":
 			o.noColor = true
+		case a == "--pre-errors":
+			v, err := take(&i, a)
+			if err != nil {
+				return nil, err
+			}
+			o.preErrors = v
+		case strings.HasPrefix(a, "--pre-errors="):
+			o.preErrors = strings.TrimPrefix(a, "--pre-errors=")
 		case a == "-p", a == "--pre":
 			v, err := take(&i, a)
 			if err != nil {
@@ -426,6 +439,13 @@ func run(o *options) (int, error) {
 
 	leftCmds, leftIgnorePreprocessErrors := pickPre(o, leftDisplayPath, side("left"))
 	rightCmds, rightIgnorePreprocessErrors := pickPre(o, rightDisplayPath, side("right"))
+	preErrOut, closePreErrorWriter, err := preprocessErrorWriter(o.preErrors)
+	if err != nil {
+		return 2, err
+	}
+	if closePreErrorWriter != nil {
+		defer closePreErrorWriter()
+	}
 
 	tmpDir, err := os.MkdirTemp("", "diffhance-")
 	if err != nil {
@@ -435,11 +455,11 @@ func run(o *options) (int, error) {
 		defer os.RemoveAll(tmpDir)
 	}
 
-	leftOut, err := stage(tmpDir, leftPrefix, leftDisplayPath, leftPath, leftCmds, leftIgnorePreprocessErrors)
+	leftOut, err := stage(tmpDir, leftPrefix, leftDisplayPath, leftPath, leftCmds, leftIgnorePreprocessErrors, preErrOut)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess left: %w", err)
 	}
-	rightOut, err := stage(tmpDir, rightPrefix, rightDisplayPath, rightPath, rightCmds, rightIgnorePreprocessErrors)
+	rightOut, err := stage(tmpDir, rightPrefix, rightDisplayPath, rightPath, rightCmds, rightIgnorePreprocessErrors, preErrOut)
 	if err != nil {
 		return 2, fmt.Errorf("preprocess right: %w", err)
 	}
@@ -528,7 +548,7 @@ func pickPre(o *options, displayPath string, s side) ([]string, bool) {
 // stage either copies src into tmpDir or streams it through cmd, returning
 // the path of the staged file. The staged path preserves the original display
 // path so diff output stays meaningful.
-func stage(tmpDir, side, displayPath, src string, cmds []string, ignorePreprocessErrors bool) (string, error) {
+func stage(tmpDir, side, displayPath, src string, cmds []string, ignorePreprocessErrors bool, preErrorWriter io.Writer) (string, error) {
 	sub := filepath.Join(tmpDir, side)
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		return "", err
@@ -557,7 +577,7 @@ func stage(tmpDir, side, displayPath, src string, cmds []string, ignorePreproces
 		return out, nil
 	}
 	if ignorePreprocessErrors {
-		return stageIgnoringPreprocessErrors(tmpDir, out, src, cmds)
+		return stageIgnoringPreprocessErrors(tmpDir, out, src, cmds, preErrorWriter)
 	}
 
 	in, err := openInput(src)
@@ -610,7 +630,7 @@ func stage(tmpDir, side, displayPath, src string, cmds []string, ignorePreproces
 	return out, nil
 }
 
-func stageIgnoringPreprocessErrors(tmpDir, out, src string, cmds []string) (string, error) {
+func stageIgnoringPreprocessErrors(tmpDir, out, src string, cmds []string, preErrorWriter io.Writer) (string, error) {
 	currentPath := src
 	var tempPaths []string
 	defer func() {
@@ -631,10 +651,11 @@ func stageIgnoringPreprocessErrors(tmpDir, out, src string, cmds []string) (stri
 		}
 		tempPath := f.Name()
 
-		runErr := runPreprocessQuiet(cmd, in, f)
+		runErr, stderr := runPreprocessCapturingStderr(cmd, in, f)
 		closeErr := f.Close()
 		_ = in.Close()
 		if runErr != nil {
+			reportIgnoredPreprocessError(preErrorWriter, cmd, runErr, stderr)
 			_ = os.Remove(tempPath)
 			continue
 		}
@@ -666,8 +687,40 @@ func runPreprocess(cmd string, in io.Reader, out io.Writer) error {
 	return runPreprocessWithStderr(cmd, in, out, os.Stderr)
 }
 
-func runPreprocessQuiet(cmd string, in io.Reader, out io.Writer) error {
-	return runPreprocessWithStderr(cmd, in, out, io.Discard)
+func runPreprocessCapturingStderr(cmd string, in io.Reader, out io.Writer) (error, string) {
+	var stderr bytes.Buffer
+	err := runPreprocessWithStderr(cmd, in, out, &stderr)
+	return err, stderr.String()
+}
+
+func preprocessErrorWriter(target string) (io.Writer, func() error, error) {
+	switch target {
+	case "":
+		return nil, nil, nil
+	case "stderr":
+		return os.Stderr, nil, nil
+	default:
+		f, err := os.Create(target)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open preprocessor error log %q: %w", target, err)
+		}
+		return f, f.Close, nil
+	}
+}
+
+func reportIgnoredPreprocessError(w io.Writer, cmd string, err error, stderr string) {
+	if w == nil {
+		return
+	}
+	exitCode := "unknown"
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		exitCode = fmt.Sprint(ee.ExitCode())
+	}
+	fmt.Fprintf(w, "diffhance: ignored rule preprocessor failure\ncommand: %q\nexit code: %s\nstderr:\n%s", cmd, exitCode, stderr)
+	if stderr == "" || !strings.HasSuffix(stderr, "\n") {
+		fmt.Fprintln(w)
+	}
 }
 
 func runPreprocessWithStderr(cmd string, in io.Reader, out io.Writer, stderr io.Writer) error {
