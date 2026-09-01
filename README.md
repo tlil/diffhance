@@ -6,7 +6,7 @@ field-by-field diff, an unformatted XML diff becomes a structural diff,
 and so on.
 
 It follows the UNIX philosophy: it does one thing, it composes with
-`git`, `diff`, `delta`, `difft`, and friends, and it exits with the same
+`git`, `diff`, `delta`, `difft`, `hunk`, and friends, and it exits with the same
 codes `diff(1)` does (0 = identical, 1 = differ, ≥2 = error).
 
 ## Install
@@ -28,6 +28,9 @@ diffhance --pre 'jq -S .' old.json new.json
 
 # Pipe through delta for a pretty side-by-side view
 diffhance --pre 'jq -S .' -d 'delta --paging=never' old.json new.json
+
+# Review the preprocessed pair interactively in Hunk
+diffhance --pre 'jq -S .' -d hunk old.json new.json
 
 # Only preprocess files whose basename matches a glob
 diffhance -r '*.json:jq -S .' -r '*.xml:xmllint --format -' a b
@@ -81,6 +84,61 @@ diffhance -r '*.json:jq -S .' git HEAD~1 HEAD
 diffhance git --staged -- path/to/file.json
 ```
 
+## Use with Hunk
+
+Install [Hunk](https://www.hunk.dev/docs/start/install/) first. For a single
+file pair, use `hunk` as the diff backend:
+
+```sh
+diffhance --pre 'jq -S .' --diff hunk old.json new.json
+```
+
+Diffhance invokes `hunk difftool -- LEFT RIGHT PATH`, passing Hunk the staged
+preprocessed files plus the original display path. You can include Hunk review
+options by spelling out the subcommand:
+
+```sh
+diffhance --pre 'jq -S .' --diff 'hunk difftool --theme github-dark-default' old.json new.json
+```
+
+For Git changes that need preprocessing, choose between two workflows:
+
+```sh
+# Open one Hunk review per changed file. The git shorthand disables Git's
+# pager so Hunk retains direct access to the terminal.
+diffhance -r '*.json:jq -S .' --diff hunk git --staged
+
+# Review the entire preprocessed changeset in one Hunk session (recommended
+# when preprocessing a full changeset).
+diffhance -r '*.json:jq -S .' git --staged | hunk patch -
+```
+
+These are preprocessing-aware alternatives to Hunk's native Git integrations.
+Hunk's official pair-oriented Git difftool setup, which does not run diffhance,
+is:
+
+```sh
+git config --global diff.tool hunk
+git config --global difftool.hunk.cmd 'hunk difftool "$LOCAL" "$REMOTE" "$MERGED"'
+git config --global difftool.prompt false
+git difftool
+```
+
+Use `diffhance --diff hunk git ...` instead when those file pairs need
+preprocessing. For an ordinary full changeset that needs no preprocessing,
+Hunk recommends its native `hunk diff` command.
+
+To make full-changeset reviews automatic, configure Hunk as your Git pager as
+described in its [Git pager guide](https://www.hunk.dev/docs/workflows/git-pager-and-difftool/):
+
+```sh
+git config --global core.pager "hunk pager"
+diffhance -r '*.json:jq -S .' git --staged
+```
+
+With pager integration, `git diff` supplies the complete patch to Hunk. Use
+the direct `--diff hunk` backend instead when pair-by-pair review is preferable.
+
 ## Flags
 
 | Flag                                | Description                                                                                                              |
@@ -89,7 +147,7 @@ diffhance git --staged -- path/to/file.json
 | `--pre-left CMD`, `--pre-right CMD` | Per-side overrides                                                                                                       |
 | `-r, --rule GLOB:CMD`               | Apply `CMD` when the file's basename matches `GLOB` (repeatable; matching rules are chained in order). Ignored if `--pre`/`--pre-*` is set. |
 | `-c, --config PATH`                 | Read rules from `PATH`, one `GLOB:CMD` per line. Blank lines and lines starting with `#` are ignored.                    |
-| `-d, --diff CMD`                    | Diff backend (default `diff -u`). The two preprocessed paths are appended as the last two positional args.               |
+| `-d, --diff CMD`                    | Diff backend (default `diff -u`). Receives the two preprocessed paths; bare `hunk` invokes `hunk difftool` with the original display path. |
 | `--git`                             | Treat positional args as git's external-diff invocation                                                                  |
 | `git [args...]`                     | Shorthand: run `git diff [args...]` with `GIT_EXTERNAL_DIFF` set to this binary; preceding flags are forwarded           |
 | `--print`                           | Skip diffing; print `LEFT-PATH\tRIGHT-PATH` of the preprocessed files                                                    |

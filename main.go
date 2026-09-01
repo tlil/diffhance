@@ -45,7 +45,8 @@ FLAGS
                            Existing default configs are also loaded from the platform's
                            config directories as diffhance/rules.
   -d, --diff CMD           Diff backend (default: "diff -u"). Receives preprocessed
-                           LEFT and RIGHT as the last two positional args.
+                           LEFT and RIGHT as arguments. Bare "hunk" invokes
+                           "hunk difftool -- LEFT RIGHT PATH" with the display path.
       --git                Treat positional args as git's external-diff invocation:
                            PATH OLD-FILE OLD-HEX OLD-MODE NEW-FILE NEW-HEX NEW-MODE ...
       --print              Skip diffing. Print "LEFT-PATH\tRIGHT-PATH" of the
@@ -62,6 +63,9 @@ EXAMPLES
 
   # Use delta as the renderer
   diffhance --pre 'jq .' -d delta old.json new.json
+
+  # Review the preprocessed pair in Hunk
+  diffhance --pre 'jq .' -d hunk old.json new.json
 
   # Per-extension rules
   diffhance -r '*.json:jq .' -r '*.xml:xmllint --format -' a/ b/   # (per file)
@@ -195,7 +199,13 @@ var executablePath = func() string {
 // "git diff ARGS..." with GIT_EXTERNAL_DIFF pointing back at this binary in
 // --git mode, forwarding any diffhance flags that preceded "git".
 func runGitDiff(forward, gitArgs []string) (int, error) {
-	c := exec.Command("git", append([]string{"diff"}, gitArgs...)...)
+	gitCommand := []string{"diff"}
+	if forwardedDiffUsesHunk(forward) {
+		// Git normally puts diff output behind its pager when stdout is a
+		// terminal. A direct Hunk backend needs that terminal itself.
+		gitCommand = []string{"--no-pager", "diff"}
+	}
+	c := exec.Command("git", append(gitCommand, gitArgs...)...)
 	c.Env = append(os.Environ(), "GIT_EXTERNAL_DIFF="+gitExternalDiffCommand(executablePath(), forward))
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
@@ -208,6 +218,29 @@ func runGitDiff(forward, gitArgs []string) (int, error) {
 		return 2, fmt.Errorf("running git diff: %w", err)
 	}
 	return 0, nil
+}
+
+func forwardedDiffUsesHunk(argv []string) bool {
+	backend := ""
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "-d" || a == "--diff":
+			if i+1 < len(argv) {
+				i++
+				backend = argv[i]
+			}
+		case strings.HasPrefix(a, "--diff="):
+			backend = strings.TrimPrefix(a, "--diff=")
+		case strings.HasPrefix(a, "-d") && len(a) > 2:
+			backend = a[2:]
+		case valueFlags[a]:
+			if i+1 < len(argv) {
+				i++
+			}
+		}
+	}
+	return isHunkDifftoolBackend(backend)
 }
 
 // gitExternalDiffCommand builds the GIT_EXTERNAL_DIFF command string. Git
@@ -471,7 +504,7 @@ func run(o *options) (int, error) {
 
 	leftLabel := filepath.Join(leftPrefix, stageDisplayPath(leftDisplayPath, leftPrefix))
 	rightLabel := filepath.Join(rightPrefix, stageDisplayPath(rightDisplayPath, rightPrefix))
-	code, err := runDiff(o, leftOut, rightOut, leftLabel, rightLabel)
+	code, err := runDiff(o, leftOut, rightOut, leftLabel, rightLabel, rightDisplayPath)
 	// Git treats any non-zero exit from GIT_EXTERNAL_DIFF as fatal. The "files
 	// differ" signal (exit 1) is meaningless to git here — it already knew
 	// they differ, that's why it invoked us — so swallow it in --git mode.
@@ -794,7 +827,7 @@ func shell() (string, string) {
 	return "/bin/sh", "-c"
 }
 
-func runDiff(o *options, left, right, leftLabel, rightLabel string) (int, error) {
+func runDiff(o *options, left, right, leftLabel, rightLabel, displayPath string) (int, error) {
 	cmdline := o.diff
 	if !o.noColor && shouldColor() {
 		cmdline = injectColor(cmdline)
@@ -802,7 +835,18 @@ func runDiff(o *options, left, right, leftLabel, rightLabel string) (int, error)
 	if shouldPipeLabeledDiff(cmdline) {
 		return runLabeledDiffThroughBackend(cmdline, left, right, leftLabel, rightLabel)
 	}
-	full := diffCommand(cmdline, left, right, leftLabel, rightLabel)
+	hunkBackend := isHunkDifftoolBackend(cmdline)
+	diffCode := 0
+	if hunkBackend {
+		equal, err := filesEqual(left, right)
+		if err != nil {
+			return 2, fmt.Errorf("compare staged files: %w", err)
+		}
+		if !equal {
+			diffCode = 1
+		}
+	}
+	full := diffCommand(cmdline, left, right, leftLabel, rightLabel, displayPath)
 	shellBin, flag := shell()
 	c := exec.Command(shellBin, flag, full)
 	c.Stdout = os.Stdout
@@ -812,12 +856,62 @@ func runDiff(o *options, left, right, leftLabel, rightLabel string) (int, error)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
+			if hunkBackend && ee.ExitCode() == 1 {
+				// Hunk uses 1 for an application error, not "files differ".
+				return 2, nil
+			}
 			// Treat exit code 1 (differences) as success for diffhance itself.
 			return ee.ExitCode(), nil
 		}
 		return 2, err
 	}
-	return 0, nil
+	return diffCode, nil
+}
+
+func filesEqual(left, right string) (bool, error) {
+	l, err := os.Open(left)
+	if err != nil {
+		return false, err
+	}
+	defer l.Close()
+	r, err := os.Open(right)
+	if err != nil {
+		return false, err
+	}
+	defer r.Close()
+
+	leftInfo, err := l.Stat()
+	if err != nil {
+		return false, err
+	}
+	rightInfo, err := r.Stat()
+	if err != nil {
+		return false, err
+	}
+	if leftInfo.Size() != rightInfo.Size() {
+		return false, nil
+	}
+
+	leftBuf := make([]byte, 32*1024)
+	rightBuf := make([]byte, len(leftBuf))
+	for {
+		n, readErr := io.ReadFull(l, leftBuf)
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			return false, readErr
+		}
+		if n == 0 {
+			return true, nil
+		}
+		if _, err := io.ReadFull(r, rightBuf[:n]); err != nil {
+			return false, err
+		}
+		if !bytes.Equal(leftBuf[:n], rightBuf[:n]) {
+			return false, nil
+		}
+		if readErr == io.ErrUnexpectedEOF {
+			return true, nil
+		}
+	}
 }
 
 func runLabeledDiffThroughBackend(cmdline, left, right, leftLabel, rightLabel string) (int, error) {
@@ -856,11 +950,36 @@ func runLabeledDiff(left, right, leftLabel, rightLabel string) (string, int, err
 	return string(out), 0, nil
 }
 
-func diffCommand(cmdline, left, right, leftLabel, rightLabel string) string {
+func diffCommand(cmdline, left, right, leftLabel, rightLabel, displayPath string) string {
+	if isHunkDifftoolBackend(cmdline) {
+		fields := strings.Fields(cmdline)
+		if len(fields) == 1 {
+			cmdline += " difftool"
+		}
+		hasEndOfOptions := false
+		for _, field := range fields {
+			if field == "--" {
+				hasEndOfOptions = true
+				break
+			}
+		}
+		if !hasEndOfOptions {
+			cmdline += " --"
+		}
+		return cmdline + " " + shellQuote(left) + " " + shellQuote(right) + " " + shellQuote(displayPath)
+	}
 	if shouldLabelBareDiff(cmdline) {
 		cmdline += " --label " + shellQuote(leftLabel) + " --label " + shellQuote(rightLabel)
 	}
 	return cmdline + " " + shellQuote(left) + " " + shellQuote(right)
+}
+
+func isHunkDifftoolBackend(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 || strings.TrimSuffix(strings.ToLower(filepath.Base(fields[0])), ".exe") != "hunk" {
+		return false
+	}
+	return len(fields) == 1 || fields[1] == "difftool"
 }
 
 func labeledDiffCommand(left, right, leftLabel, rightLabel string) string {

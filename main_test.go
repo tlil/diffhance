@@ -610,7 +610,7 @@ func TestWindowsCmdQuoteEscapesPercentExpansion(t *testing.T) {
 }
 
 func TestDiffCommandLabelsBareDiff(t *testing.T) {
-	got := diffCommand("diff -u", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
+	got := diffCommand("diff -u", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json", "file.json")
 	want := labeledDiffCommand("/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
 	if got != want {
 		t.Fatalf("diffCommand() = %q, want %q", got, want)
@@ -618,13 +618,61 @@ func TestDiffCommandLabelsBareDiff(t *testing.T) {
 }
 
 func TestDiffCommandAppendsPathsToDelta(t *testing.T) {
-	got := diffCommand("delta --paging=never", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json")
+	got := diffCommand("delta --paging=never", "/tmp/diffhance/l/file.json", "/tmp/diffhance/r/file.json", "l/file.json", "r/file.json", "file.json")
 	want := "delta --paging=never '/tmp/diffhance/l/file.json' '/tmp/diffhance/r/file.json'"
 	if runtime.GOOS == "windows" {
 		want = `delta --paging=never "/tmp/diffhance/l/file.json" "/tmp/diffhance/r/file.json"`
 	}
 	if got != want {
 		t.Fatalf("diffCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestDiffCommandUsesHunkDifftoolWithDisplayPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		backend     string
+		displayPath string
+		wantBackend string
+	}{
+		{name: "bare hunk with absolute display path", backend: "hunk", displayPath: filepath.Join(string(filepath.Separator), "outside", "file.json"), wantBackend: "hunk difftool --"},
+		{name: "explicit difftool with options", backend: "hunk difftool --theme dark", displayPath: filepath.Join("..", "Objects", "file.json"), wantBackend: "hunk difftool --theme dark --"},
+		{name: "option-like display path", backend: "hunk", displayPath: "-config.json", wantBackend: "hunk difftool --"},
+		{name: "existing end of options", backend: "hunk difftool --theme dark --", displayPath: "file.json", wantBackend: "hunk difftool --theme dark --"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diffCommand(tt.backend, "/tmp/diffhance/l/Objects/file.json", "/tmp/diffhance/r/Objects/file.json", filepath.Join("l", "Objects", "file.json"), filepath.Join("r", "Objects", "file.json"), tt.displayPath)
+			want := tt.wantBackend + " '/tmp/diffhance/l/Objects/file.json' '/tmp/diffhance/r/Objects/file.json' " + posixQuote(tt.displayPath)
+			if runtime.GOOS == "windows" {
+				want = tt.wantBackend + ` "/tmp/diffhance/l/Objects/file.json" "/tmp/diffhance/r/Objects/file.json" ` + windowsCmdQuote(tt.displayPath)
+			}
+			if got != want {
+				t.Fatalf("diffCommand() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestForwardedDiffUsesHunk(t *testing.T) {
+	tests := []struct {
+		argv []string
+		want bool
+	}{
+		{argv: []string{"--diff", "hunk"}, want: true},
+		{argv: []string{"--diff=hunk difftool --theme dark"}, want: true},
+		{argv: []string{"-dhunk"}, want: true},
+		{argv: []string{"-d", "hunk", "--diff", "delta"}, want: false},
+		{argv: []string{"--diff", "hunk", "--pre-errors", "--diff=delta"}, want: true},
+		{argv: []string{"--diff", "delta", "--pre-errors", "--diff=hunk"}, want: false},
+		{argv: []string{"--pre", "hunk"}, want: false},
+	}
+
+	for _, tt := range tests {
+		if got := forwardedDiffUsesHunk(tt.argv); got != tt.want {
+			t.Errorf("forwardedDiffUsesHunk(%q) = %v, want %v", tt.argv, got, tt.want)
+		}
 	}
 }
 
@@ -640,7 +688,7 @@ func TestDiffCommandDoesNotLabelCustomOrAlreadyLabeledBackends(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := diffCommand(tt.cmd, "left", "right", "left-label", "right-label")
+			got := diffCommand(tt.cmd, "left", "right", "left-label", "right-label", "display-path")
 			want := tt.cmd + " " + shellQuote("left") + " " + shellQuote("right")
 			if got != want {
 				t.Fatalf("diffCommand() = %q, want %q", got, want)
@@ -1143,6 +1191,77 @@ func TestRunDeltaPreservesDiffExitOne(t *testing.T) {
 	}
 }
 
+func TestRunHunkUsesDifftoolAndPreservesDiffExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell script as fake hunk")
+	}
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(tmp, "hunk-args")
+	hunk := filepath.Join(bin, "hunk")
+	if err := os.WriteFile(hunk, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$HUNK_ARGS_FILE\"\nexit \"${HUNK_EXIT:-0}\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HUNK_ARGS_FILE", argsFile)
+
+	left := filepath.Join(tmp, "old.txt")
+	right := filepath.Join(tmp, "new.txt")
+	if err := os.WriteFile(left, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(right, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, err := run(&options{noColor: true, diff: "hunk", args: []string{left, right}})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if code != 1 {
+		t.Fatalf("run() code = %d, want 1 for different files", code)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(lines) != 5 || lines[0] != "difftool" || lines[1] != "--" || lines[4] != left {
+		t.Fatalf("hunk args = %q, want difftool -- LEFT RIGHT %s", lines, left)
+	}
+
+	code, err = run(&options{git: true, noColor: true, diff: "hunk", args: []string{"src/old.txt", left, "oldhex", "100644", right, "newhex", "100644", "src/new.txt", "100644"}})
+	if err != nil || code != 0 {
+		t.Fatalf("run() for Git rename = (%d, %v), want (0, nil)", code, err)
+	}
+	args, err = os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines = strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(lines) != 5 || lines[4] != filepath.Join("src", "new.txt") {
+		t.Fatalf("hunk rename args = %q, want display path src/new.txt", lines)
+	}
+
+	if err := os.WriteFile(right, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, err = run(&options{noColor: true, diff: "hunk", args: []string{left, right}})
+	if err != nil || code != 0 {
+		t.Fatalf("run() for identical files = (%d, %v), want (0, nil)", code, err)
+	}
+
+	t.Setenv("HUNK_EXIT", "1")
+	code, err = run(&options{noColor: true, diff: "hunk", args: []string{left, right}})
+	if err != nil || code != 2 {
+		t.Fatalf("run() for Hunk failure = (%d, %v), want (2, nil)", code, err)
+	}
+}
+
 func TestRunErrors(t *testing.T) {
 	code, err := run(&options{diff: "diff -u", args: []string{"only-one"}})
 	if err == nil || code != 2 {
@@ -1318,6 +1437,37 @@ func TestRunGitDiffRunsGitDiffWithExternalDiff(t *testing.T) {
 
 	if !strings.Contains(stdout, "-OLD") || !strings.Contains(stdout, "+NEW") {
 		t.Fatalf("runGitDiff() stdout = %q, want preprocessed -OLD/+NEW hunks", stdout)
+	}
+}
+
+func TestRunGitDiffDisablesPagerForForwardedHunkBackend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell script as fake git")
+	}
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(tmp, "git-args")
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >\"$GIT_ARGS_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_ARGS_FILE", argsFile)
+
+	code, err := runGitDiff([]string{"--diff", "hunk", "--pre-errors", "--diff=delta"}, []string{"--staged"})
+	if err != nil || code != 0 {
+		t.Fatalf("runGitDiff() = (%d, %v), want (0, nil)", code, err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "--no-pager\ndiff\n--staged\n"; string(args) != want {
+		t.Fatalf("git args = %q, want %q", args, want)
 	}
 }
 
