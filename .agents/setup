@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+setup_started=$SECONDS
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+requested_go_version="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+if [[ ! "$requested_go_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+	printf 'Unsupported Go version in go.mod: %s\n' "$requested_go_version" >&2
+	exit 1
+fi
+if [[ "$requested_go_version" != *.*.* ]]; then
+	go_version="${requested_go_version}.0"
+else
+	go_version="$requested_go_version"
+fi
+
+case "$(uname -m)" in
+	x86_64) go_arch=amd64 ;;
+	aarch64 | arm64) go_arch=arm64 ;;
+	*)
+		printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2
+		exit 1
+		;;
+esac
+
+toolchain_root="$HOME/.local/share/diffhance"
+install_dir="$toolchain_root/toolchains/go${go_version}"
+current_link="$toolchain_root/go"
+
+if ! { [ -x "$install_dir/bin/go" ] && "$install_dir/bin/go" version | grep -Fq "go${go_version} "; }; then
+	step_started=$SECONDS
+	printf '[setup] Installing Go %s for linux/%s...\n' "$go_version" "$go_arch"
+
+	archive_name="go${go_version}.linux-${go_arch}.tar.gz"
+	download_url="https://dl.google.com/go/${archive_name}"
+	cache_dir="$HOME/.cache/amp/downloads"
+	archive="$cache_dir/$archive_name"
+	mkdir -p "$cache_dir" "$toolchain_root/toolchains"
+
+	expected_checksum="$(curl -fsSL --retry 3 "${download_url}.sha256")"
+	if [ ! -f "$archive" ] || ! printf '%s  %s\n' "$expected_checksum" "$archive" | sha256sum --check --status; then
+		temporary_archive="${archive}.tmp.$$"
+		trap 'rm -f -- "${temporary_archive:-}"; rm -rf -- "${temporary_dir:-}"' EXIT
+		curl -fsSL --retry 3 --output "$temporary_archive" "$download_url"
+		printf '%s  %s\n' "$expected_checksum" "$temporary_archive" | sha256sum --check --status
+		mv -- "$temporary_archive" "$archive"
+	fi
+
+	temporary_dir="$(mktemp -d "$toolchain_root/toolchains/.go${go_version}.XXXXXX")"
+	tar -xzf "$archive" -C "$temporary_dir"
+	rm -rf -- "$install_dir"
+	mv -- "$temporary_dir/go" "$install_dir"
+	rmdir -- "$temporary_dir"
+	temporary_dir=
+	trap - EXIT
+	printf '[setup] Go installation finished in %ss.\n' "$((SECONDS - step_started))"
+else
+	printf '[setup] Go %s is already installed.\n' "$go_version"
+fi
+
+ln -sfn -- "$install_dir" "$current_link"
+export PATH="$current_link/bin:$PATH"
+
+profile_marker='# diffhance orb Go toolchain'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+	cat >> "$HOME/.bash_profile" <<'EOF'
+
+# diffhance orb Go toolchain
+if [ -x "$HOME/.local/share/diffhance/go/bin/go" ]; then
+	case ":$PATH:" in
+		*":$HOME/.local/share/diffhance/go/bin:"*) ;;
+		*) export PATH="$HOME/.local/share/diffhance/go/bin:$PATH" ;;
+	esac
+fi
+EOF
+fi
+
+step_started=$SECONDS
+printf '[setup] Downloading Go module dependencies...\n'
+go mod download
+printf '[setup] Dependencies ready in %ss.\n' "$((SECONDS - step_started))"
+printf '[setup] Complete in %ss.\n' "$((SECONDS - setup_started))"

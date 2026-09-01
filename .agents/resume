@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This repository has no services or session-scoped authentication to restore.
