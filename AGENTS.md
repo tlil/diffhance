@@ -9,9 +9,16 @@
 ## Commands
 - Format after Go edits: `gofmt -w main.go main_test.go`.
 - Run the unit test suite and compile-check everything: `go test ./...`.
-- Check statement coverage when test behavior changes: `go test -cover ./...`.
+- When test behaviour changes, use `go test -cover ./...` instead; it runs the same full suite and reports statement coverage, so a separate plain test run is unnecessary.
 - Build local CLI: `go build -o diffhance .`.
-- Match CI release-style build: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o diffhance .`.
+- When checking release-build behaviour, match CI release-style build: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o diffhance .`.
+
+## Verification And Landing
+- Retain the cheap full suite for Go changes, including exit-code, shell, Git and backend regressions; do not replace it with selective tests. Documentation-only edits do not require Go tests or builds.
+- Use native tests and a local build as appropriate during iteration. Do not replay CI's platform/release matrix locally for unrelated edits; platform-sensitive or release-build changes warrant the relevant additional checks. Keep CI's full matrix and release checks.
+- Record successful verification commands and the revision or worktree state tested. Reuse those results when landing if the relevant code, configuration and toolchain inputs are unchanged; committing alone does not require rerunning them.
+- After a rebase, inspect upstream changes and conflict resolutions and rerun checks whose inputs changed. Follow required repository and upstream checks, confirm required CI outcomes for the landed revision, and report any verification omissions accurately.
+- Preserve the existing guarded toolchain installation and download cache. Do not add a cache layer or clear caches or snapshots without evidence of a problem.
 
 ## Behavior To Preserve
 - Exit codes intentionally mirror `diff(1)`: `0` identical, `1` different, `>1` error.
